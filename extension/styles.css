@@ -1,0 +1,176 @@
+/* QuantRooms Content Script Styles */
+
+#quantrooms-floating-btn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 6px 16px rgba(79, 70, 229, 0.4);
+}
+
+#quantrooms-panel {
+  border: 1px solid #e5e7eb;
+}
+
+#quantrooms-panel * {
+  box-sizing: border-box;
+}
+
+#quantrooms-panel button:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+#quantrooms-panel .room-item {
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+#quantrooms-panel .room-item:hover {
+  border-color: #4F46E5;
+  background-color: #f8fafc;
+}
+
+#quantrooms-panel .room-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#quantrooms-panel .room-name {
+  font-weight: 600;
+  color: #1f2937;
+}
+
+#quantrooms-panel .room-players {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+#quantrooms-panel .room-elo {
+  font-size: 12px;
+  color: #4F46E5;
+  font-weight: 500;
+}
+
+/* Player list styles */
+#quantrooms-panel .player-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+#quantrooms-panel .player-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10B981;
+}
+
+#quantrooms-panel .player-status.solving {
+  background: #F59E0B;
+}
+
+#quantrooms-panel .player-status.completed {
+  background: #4F46E5;
+}
+
+#quantrooms-panel .player-name {
+  font-size: 14px;
+  color: #374151;
+}
+
+#quantrooms-panel .player-elo {
+  font-size: 12px;
+  color: #6b7280;
+  margin-left: auto;
+}
+
+/* Game status styles */
+#quantrooms-panel .game-timer {
+  text-align: center;
+  padding: 16px;
+  background: #f8fafc;
+  border-radius: 8px;
+  margin: 16px 0;
+}
+
+#quantrooms-panel .timer-display {
+  font-size: 24px;
+  font-weight: 700;
+  color: #1f2937;
+  margin-bottom: 4px;
+}
+
+#quantrooms-panel .timer-label {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+/* Problem voting styles */
+#quantrooms-panel .voting-section {
+  margin: 16px 0;
+}
+
+#quantrooms-panel .problem-option {
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+#quantrooms-panel .problem-option:hover {
+  border-color: #4F46E5;
+}
+
+#quantrooms-panel .problem-option.selected {
+  border-color: #4F46E5;
+  background-color: #eff6ff;
+}
+
+#quantrooms-panel .problem-title {
+  font-weight: 600;
+  color: #1f2937;
+  margin-bottom: 4px;
+}
+
+#quantrooms-panel .problem-difficulty {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: white;
+}
+
+#quantrooms-panel .problem-difficulty.easy {
+  background: #10B981;
+}
+
+#quantrooms-panel .problem-difficulty.medium {
+  background: #F59E0B;
+}
+
+#quantrooms-panel .problem-difficulty.hard {
+  background: #EF4444;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  #quantrooms-floating-btn {
+    top: 10px;
+    right: 10px;
+    width: 45px;
+    height: 45px;
+  }
+  
+  #quantrooms-panel {
+    top: 65px;
+    right: 10px;
+    width: calc(100vw - 20px);
+    max-width: 350px;
+  }
+}
