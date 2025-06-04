@@ -1,181 +1,194 @@
 // QuantRooms Content Script
 // Injected into QuantGuide.io pages
+// Handles problem detection and data extraction only
 
 class QuantRooms {
   constructor() {
-    this.isActive = false;
-    this.currentRoom = null;
-    this.socket = null;
+    this.problemData = null;
     this.init();
   }
 
   init() {
     console.log('QuantRooms: Initializing on', window.location.href);
     
-    // Wait for page to fully load
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => this.setupUI());
-    } else {
-      this.setupUI();
-    }
-  }
-
-  setupUI() {
-    // Create QuantRooms overlay
-    this.createOverlay();
-    
     // Listen for messages from popup/background
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       this.handleMessage(message, sendResponse);
+      return true; // Keep message channel open for async responses
     });
     
     // Detect if we're on a problem page
-    this.detectProblemPage();
-  }
-
-  createOverlay() {
-    // Create floating button
-    const floatingBtn = document.createElement('div');
-    floatingBtn.id = 'quantrooms-floating-btn';
-    floatingBtn.innerHTML = '🎮';
-    floatingBtn.style.cssText = `
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      width: 50px;
-      height: 50px;
-      background: #4F46E5;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      z-index: 10000;
-      font-size: 20px;
-      box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
-      transition: all 0.3s ease;
-    `;
-    
-    floatingBtn.addEventListener('click', () => this.togglePanel());
-    document.body.appendChild(floatingBtn);
-
-    // Create main panel (initially hidden)
-    this.createMainPanel();
-  }
-
-  createMainPanel() {
-    const panel = document.createElement('div');
-    panel.id = 'quantrooms-panel';
-    panel.style.cssText = `
-      position: fixed;
-      top: 80px;
-      right: 20px;
-      width: 350px;
-      height: 500px;
-      background: white;
-      border-radius: 12px;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
-      z-index: 10001;
-      display: none;
-      overflow: hidden;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    `;
-
-    panel.innerHTML = `
-      <div style="padding: 20px; border-bottom: 1px solid #e5e7eb;">
-        <h3 style="margin: 0; color: #1f2937; font-size: 18px;">QuantRooms</h3>
-        <p style="margin: 5px 0 0 0; color: #6b7280; font-size: 14px;">Multiplayer coding practice</p>
-      </div>
-      
-      <div id="quantrooms-content" style="padding: 20px; height: calc(100% - 80px); overflow-y: auto;">
-        <div id="lobby-section">
-          <h4 style="margin: 0 0 15px 0; color: #374151;">Active Rooms</h4>
-          <div id="room-list">
-            <div style="text-align: center; color: #9ca3af; padding: 40px 0;">
-              <p>No active rooms</p>
-              <button id="create-room-btn" style="
-                background: #4F46E5;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 6px;
-                cursor: pointer;
-                margin-top: 10px;
-              ">Create Room</button>
-            </div>
-          </div>
-        </div>
-        
-        <div id="room-section" style="display: none;">
-          <h4 style="margin: 0 0 15px 0; color: #374151;">Room: <span id="room-name"></span></h4>
-          <div id="player-list"></div>
-          <div id="game-status"></div>
-        </div>
-      </div>
-    `;
-
-    document.body.appendChild(panel);
-    this.panel = panel;
-    
-    // Add event listeners
-    document.getElementById('create-room-btn')?.addEventListener('click', () => {
-      this.createRoom();
-    });
-  }
-
-  togglePanel() {
-    const panel = document.getElementById('quantrooms-panel');
-    if (panel.style.display === 'none') {
-      panel.style.display = 'block';
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => this.detectProblemPage());
     } else {
-      panel.style.display = 'none';
+      this.detectProblemPage();
     }
+    
+    // Monitor for URL changes (SPA navigation)
+    this.setupNavigationListener();
+  }
+
+  setupNavigationListener() {
+    // Listen for URL changes in single-page application
+    let lastUrl = window.location.href;
+    
+    const observer = new MutationObserver(() => {
+      const currentUrl = window.location.href;
+      if (currentUrl !== lastUrl) {
+        lastUrl = currentUrl;
+        console.log('QuantRooms: URL changed, checking for problem page');
+        this.detectProblemPage();
+      }
+    });
+    
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
   }
 
   detectProblemPage() {
     // Check if we're on a QuantGuide problem page
     const isProblemPage = window.location.pathname.includes('/problem') || 
+                         window.location.pathname.includes('/problems/') ||
                          document.querySelector('[data-problem-id]') ||
-                         document.querySelector('.problem-content');
+                         document.querySelector('.problem-content') ||
+                         document.querySelector('.problem-statement');
     
     if (isProblemPage) {
       console.log('QuantRooms: Problem page detected');
-      this.setupProblemPageFeatures();
+      this.extractProblemData();
+    } else {
+      this.problemData = null;
     }
   }
 
-  setupProblemPageFeatures() {
-    // Add collaborative features to problem pages
-    // This will be expanded later
+  extractProblemData() {
+    try {
+      // Extract problem information from the page
+      const problemData = {
+        url: window.location.href,
+        title: null,
+        difficulty: null,
+        category: null,
+        problemId: null,
+        description: null
+      };
+
+      // Try to extract problem title
+      const titleElement = document.querySelector('h1, h2, .problem-title, [class*="problem-title"], [class*="question-title"]');
+      if (titleElement) {
+        problemData.title = titleElement.textContent.trim();
+      }
+
+      // Try to extract difficulty
+      const difficultyElement = document.querySelector('[class*="difficulty"], [class*="level"], .badge');
+      if (difficultyElement) {
+        const difficultyText = difficultyElement.textContent.toLowerCase();
+        if (difficultyText.includes('easy')) problemData.difficulty = 'Easy';
+        else if (difficultyText.includes('medium')) problemData.difficulty = 'Medium';
+        else if (difficultyText.includes('hard')) problemData.difficulty = 'Hard';
+      }
+
+      // Try to extract problem ID from URL or data attributes
+      const urlMatch = window.location.pathname.match(/problem[s]?\/([\w-]+)/i);
+      if (urlMatch) {
+        problemData.problemId = urlMatch[1];
+      } else {
+        const idElement = document.querySelector('[data-problem-id]');
+        if (idElement) {
+          problemData.problemId = idElement.getAttribute('data-problem-id');
+        }
+      }
+
+      // Try to extract category/tags
+      const categoryElements = document.querySelectorAll('[class*="tag"], [class*="category"], .chip');
+      if (categoryElements.length > 0) {
+        problemData.category = Array.from(categoryElements)
+          .map(el => el.textContent.trim())
+          .filter(text => text.length > 0)
+          .join(', ');
+      }
+
+      this.problemData = problemData;
+      console.log('QuantRooms: Problem data extracted:', problemData);
+
+      // Notify background script that we're on a problem page
+      chrome.runtime.sendMessage({
+        type: 'PROBLEM_PAGE_DETECTED',
+        problemData: problemData
+      }).catch(() => {});
+
+    } catch (error) {
+      console.error('QuantRooms: Error extracting problem data:', error);
+    }
   }
 
   handleMessage(message, sendResponse) {
     switch (message.type) {
       case 'GET_PAGE_INFO':
+        const isProblemPage = window.location.pathname.includes('/problem') || 
+                             document.querySelector('[data-problem-id]') ||
+                             document.querySelector('.problem-content');
+        
         sendResponse({
           url: window.location.href,
-          isProblemPage: this.detectProblemPage()
+          isProblemPage: isProblemPage,
+          problemData: this.problemData
         });
         break;
         
-      case 'JOIN_ROOM':
-        this.joinRoom(message.roomId);
+      case 'GET_PROBLEM_DATA':
+        // Re-extract problem data if requested
+        this.extractProblemData();
+        sendResponse({
+          problemData: this.problemData
+        });
+        break;
+        
+      case 'HIGHLIGHT_PROBLEM':
+        // Highlight current problem when in a multiplayer session
+        this.highlightProblem(message.highlight);
         sendResponse({ success: true });
         break;
         
       default:
         console.log('QuantRooms: Unknown message type:', message.type);
+        sendResponse({ error: 'Unknown message type' });
     }
   }
 
-  createRoom() {
-    // TODO: Implement room creation
-    console.log('Creating room...');
-  }
-
-  joinRoom(roomId) {
-    // TODO: Implement room joining
-    console.log('Joining room:', roomId);
+  highlightProblem(shouldHighlight) {
+    // Add visual indicator when in multiplayer mode
+    const existingIndicator = document.getElementById('quantrooms-indicator');
+    
+    if (shouldHighlight) {
+      if (!existingIndicator) {
+        const indicator = document.createElement('div');
+        indicator.id = 'quantrooms-indicator';
+        indicator.textContent = 'QuantRooms Active';
+        indicator.style.cssText = `
+          position: fixed;
+          top: 10px;
+          left: 50%;
+          transform: translateX(-50%);
+          background: #4F46E5;
+          color: white;
+          padding: 8px 16px;
+          border-radius: 20px;
+          font-size: 14px;
+          font-weight: 500;
+          z-index: 9999;
+          box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        `;
+        document.body.appendChild(indicator);
+      }
+    } else {
+      if (existingIndicator) {
+        existingIndicator.remove();
+      }
+    }
   }
 }
 

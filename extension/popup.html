@@ -126,6 +126,143 @@
       color: #111827;
       font-weight: 500;
     }
+    
+    .button-group {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    
+    .primary-button {
+      background: #4F46E5;
+      color: white;
+      padding: 12px 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    .primary-button:hover {
+      background: #4338CA;
+    }
+    
+    .secondary-button {
+      background: white;
+      color: #374151;
+      padding: 12px 16px;
+      border: 1px solid #D1D5DB;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    .secondary-button:hover {
+      background: #F9FAFB;
+    }
+    
+    .input-field {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid #D1D5DB;
+      border-radius: 6px;
+      font-size: 14px;
+      margin-bottom: 12px;
+      box-sizing: border-box;
+    }
+    
+    .rooms-list {
+      max-height: 200px;
+      overflow-y: auto;
+      margin-top: 12px;
+    }
+    
+    .room-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px;
+      background: white;
+      border: 1px solid #E5E7EB;
+      border-radius: 6px;
+      margin-bottom: 8px;
+    }
+    
+    .room-info {
+      flex: 1;
+    }
+    
+    .room-players {
+      display: block;
+      font-size: 12px;
+      color: #6B7280;
+      margin-top: 4px;
+    }
+    
+    .join-button {
+      background: #4F46E5;
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    
+    .no-rooms {
+      text-align: center;
+      color: #6B7280;
+      padding: 20px;
+    }
+    
+    .notification {
+      animation: slideIn 0.3s ease;
+    }
+    
+    @keyframes slideIn {
+      from {
+        transform: translateX(100%);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+    
+    .room-view h3 {
+      margin: 0 0 12px 0;
+      font-size: 16px;
+      color: #111827;
+    }
+    
+    .room-code {
+      font-size: 14px;
+      color: #6B7280;
+      margin-bottom: 16px;
+    }
+    
+    .players-list {
+      margin-bottom: 16px;
+    }
+    
+    .players-list h4 {
+      margin: 0 0 8px 0;
+      font-size: 14px;
+      color: #374151;
+    }
+    
+    .player-item {
+      padding: 8px 12px;
+      background: #F9FAFB;
+      border-radius: 4px;
+      margin-bottom: 4px;
+      font-size: 13px;
+    }
   </style>
 </head>
 <body>
@@ -140,7 +277,7 @@
       <span class="status-text" id="connectionStatus">Connecting...</span>
     </div>
     
-    <div class="quick-actions">
+    <div class="button-group">
       <button class="btn btn-primary" id="quickMatchBtn">Quick Match</button>
       <button class="btn btn-secondary" id="createRoomBtn">Create Room</button>
       <button class="btn btn-secondary" id="joinRoomBtn">Join Room</button>
