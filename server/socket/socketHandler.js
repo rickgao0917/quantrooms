@@ -1,216 +1,326 @@
-const { v4: uuidv4 } = require('uuid');
-
-// In-memory storage for rooms
-const rooms = new Map();
-const userSocketMap = new Map();
+const roomService = require('../services/roomService');
+const { socketAuth } = require('../middleware/auth');
+const { createSocketLimiter } = require('../middleware/security');
 
 class SocketHandler {
   constructor(io) {
     this.io = io;
+    this.userSocketMap = new Map(); // Map socket.id to user info
+    this.userRoomMap = new Map(); // Map userId to roomId
+    
+    // Apply authentication middleware
+    this.io.use(socketAuth);
+    
+    // Create rate limiters for different events
+    this.rateLimiters = {
+      createRoom: createSocketLimiter('create-room', 3, 60000), // 3 per minute
+      joinRoom: createSocketLimiter('join-room', 10, 60000), // 10 per minute
+      message: createSocketLimiter('message', 30, 10000), // 30 per 10 seconds
+    };
   }
 
   initialize() {
-    this.io.on('connection', (socket) => {
-      console.log('New client connected:', socket.id);
+    this.io.on('connection', async (socket) => {
+      console.log('New authenticated client connected:', socket.id, 'User:', socket.user.username);
       
-      // Send initial room list to new client
-      socket.emit('room-list', this.getRoomList());
+      // Store user info
+      this.userSocketMap.set(socket.id, {
+        userId: socket.user.userId,
+        username: socket.user.username,
+        elo: socket.user.elo
+      });
       
-      // Handle room creation
+      // Check if user is already in a room
+      const currentRoomId = await roomService.getUserCurrentRoom(socket.user.userId);
+      if (currentRoomId) {
+        socket.join(currentRoomId);
+        this.userRoomMap.set(socket.user.userId, currentRoomId);
+        
+        // Send current room info
+        const room = await roomService.getRoom(currentRoomId);
+        socket.emit('current-room', room);
+      }
+      
+      // Send initial room list
+      const rooms = await roomService.getAllRooms();
+      socket.emit('room-list', rooms);
+      
+      // Set up event handlers
       socket.on('create-room', (data) => this.handleCreateRoom(socket, data));
-      
-      // Handle room joining
       socket.on('join-room', (data) => this.handleJoinRoom(socket, data));
-      
-      // Handle room leaving
       socket.on('leave-room', () => this.handleLeaveRoom(socket));
-      
-      // Handle disconnection
+      socket.on('get-rooms', () => this.handleGetRooms(socket));
       socket.on('disconnect', () => this.handleDisconnect(socket));
       
-      // Handle get room list request
-      socket.on('get-rooms', () => {
-        socket.emit('room-list', this.getRoomList());
+      // Game-related events (for future implementation)
+      socket.on('ready', () => this.handlePlayerReady(socket));
+      socket.on('submit-solution', (data) => this.handleSubmitSolution(socket, data));
+      socket.on('vote-problem', (data) => this.handleVoteProblem(socket, data));
+      
+      // Chat events
+      socket.on('send-message', (data) => this.handleSendMessage(socket, data));
+    });
+    
+    // Start periodic cleanup
+    this.startCleanupInterval();
+  }
+
+  async handleCreateRoom(socket, data) {
+    try {
+      // Rate limiting
+      await new Promise((resolve, reject) => {
+        this.rateLimiters.createRoom(socket, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
       });
-    });
-  }
-
-  handleCreateRoom(socket, data) {
-    const { roomName, userId, maxPlayers = 8 } = data;
-    
-    if (!roomName || !userId) {
-      socket.emit('error', { message: 'Room name and user ID are required' });
-      return;
-    }
-    
-    const roomId = `room_${uuidv4()}`;
-    const room = {
-      id: roomId,
-      name: roomName,
-      creator: userId,
-      players: [{
-        id: userId,
-        socketId: socket.id,
-        joinedAt: Date.now()
-      }],
-      maxPlayers: Math.min(Math.max(2, maxPlayers), 8), // Ensure 2-8 players
-      status: 'waiting',
-      createdAt: Date.now()
-    };
-    
-    rooms.set(roomId, room);
-    userSocketMap.set(socket.id, { roomId, userId });
-    
-    // Join socket room
-    socket.join(roomId);
-    
-    // Send confirmation to creator
-    socket.emit('room-created', {
-      room: room,
-      success: true
-    });
-    
-    // Broadcast updated room list to all clients
-    this.io.emit('room-list', this.getRoomList());
-    
-    console.log(`Room created: ${roomId} by user ${userId}`);
-  }
-
-  handleJoinRoom(socket, data) {
-    const { roomId, userId } = data;
-    
-    if (!roomId || !userId) {
-      socket.emit('error', { message: 'Room ID and user ID are required' });
-      return;
-    }
-    
-    const room = rooms.get(roomId);
-    
-    if (!room) {
-      socket.emit('error', { message: 'Room not found' });
-      return;
-    }
-    
-    if (room.players.length >= room.maxPlayers) {
-      socket.emit('error', { message: 'Room is full' });
-      return;
-    }
-    
-    // Check if user is already in the room
-    const existingPlayer = room.players.find(p => p.id === userId);
-    if (existingPlayer) {
-      socket.emit('error', { message: 'You are already in this room' });
-      return;
-    }
-    
-    // Add player to room
-    room.players.push({
-      id: userId,
-      socketId: socket.id,
-      joinedAt: Date.now()
-    });
-    
-    userSocketMap.set(socket.id, { roomId, userId });
-    
-    // Join socket room
-    socket.join(roomId);
-    
-    // Send confirmation to joiner
-    socket.emit('room-joined', {
-      room: room,
-      success: true
-    });
-    
-    // Notify all players in room
-    this.io.to(roomId).emit('room-updated', room);
-    
-    // Broadcast updated room list to all clients
-    this.io.emit('room-list', this.getRoomList());
-    
-    console.log(`User ${userId} joined room ${roomId}`);
-  }
-
-  handleLeaveRoom(socket) {
-    const userInfo = userSocketMap.get(socket.id);
-    
-    if (!userInfo) {
-      return;
-    }
-    
-    const { roomId, userId } = userInfo;
-    const room = rooms.get(roomId);
-    
-    if (!room) {
-      return;
-    }
-    
-    // Remove player from room
-    room.players = room.players.filter(p => p.socketId !== socket.id);
-    
-    // Leave socket room
-    socket.leave(roomId);
-    
-    // Remove from user map
-    userSocketMap.delete(socket.id);
-    
-    // If room is empty, delete it
-    if (room.players.length === 0) {
-      rooms.delete(roomId);
-      console.log(`Room ${roomId} deleted (empty)`);
-    } else {
-      // If creator left, assign new creator
-      if (room.creator === userId && room.players.length > 0) {
-        room.creator = room.players[0].id;
+      
+      // Check if user is already in a room
+      const currentRoomId = this.userRoomMap.get(socket.user.userId);
+      if (currentRoomId) {
+        socket.emit('error', { 
+          message: 'You must leave your current room before creating a new one',
+          code: 'ALREADY_IN_ROOM'
+        });
+        return;
       }
       
-      // Notify remaining players
-      this.io.to(roomId).emit('room-updated', room);
+      // Create room
+      const room = await roomService.createRoom(socket.user.userId, data);
+      
+      // Join socket room
+      socket.join(room.room_id);
+      this.userRoomMap.set(socket.user.userId, room.room_id);
+      
+      // Send confirmation
+      socket.emit('room-created', {
+        success: true,
+        room
+      });
+      
+      // Broadcast updated room list
+      const rooms = await roomService.getAllRooms();
+      this.io.emit('room-list', rooms);
+      
+      console.log(`Room created: ${room.room_id} by ${socket.user.username}`);
+    } catch (error) {
+      console.error('Create room error:', error);
+      socket.emit('error', { 
+        message: error.message || 'Failed to create room',
+        code: 'CREATE_ROOM_ERROR'
+      });
     }
-    
-    // Send confirmation to leaver
-    socket.emit('room-left', { success: true });
-    
-    // Broadcast updated room list to all clients
-    this.io.emit('room-list', this.getRoomList());
-    
-    console.log(`User ${userId} left room ${roomId}`);
   }
 
-  handleDisconnect(socket) {
-    console.log('Client disconnected:', socket.id);
+  async handleJoinRoom(socket, data) {
+    try {
+      // Rate limiting
+      await new Promise((resolve, reject) => {
+        this.rateLimiters.joinRoom(socket, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      
+      const { roomId } = data;
+      
+      if (!roomId) {
+        socket.emit('error', { 
+          message: 'Room ID is required',
+          code: 'INVALID_REQUEST'
+        });
+        return;
+      }
+      
+      // Check if user is already in a room
+      const currentRoomId = this.userRoomMap.get(socket.user.userId);
+      if (currentRoomId) {
+        socket.emit('error', { 
+          message: 'You must leave your current room before joining another',
+          code: 'ALREADY_IN_ROOM'
+        });
+        return;
+      }
+      
+      // Join room
+      const room = await roomService.joinRoom(roomId, socket.user.userId);
+      
+      // Join socket room
+      socket.join(roomId);
+      this.userRoomMap.set(socket.user.userId, roomId);
+      
+      // Send confirmation
+      socket.emit('room-joined', {
+        success: true,
+        room
+      });
+      
+      // Notify other players
+      socket.to(roomId).emit('player-joined', {
+        player: {
+          id: socket.user.userId,
+          name: socket.user.username,
+          elo: socket.user.elo,
+          joinedAt: new Date()
+        }
+      });
+      
+      // Broadcast updated room list
+      const rooms = await roomService.getAllRooms();
+      this.io.emit('room-list', rooms);
+      
+      console.log(`${socket.user.username} joined room ${roomId}`);
+    } catch (error) {
+      console.error('Join room error:', error);
+      socket.emit('error', { 
+        message: error.message || 'Failed to join room',
+        code: 'JOIN_ROOM_ERROR'
+      });
+    }
+  }
+
+  async handleLeaveRoom(socket) {
+    try {
+      const roomId = this.userRoomMap.get(socket.user.userId);
+      
+      if (!roomId) {
+        socket.emit('error', { 
+          message: 'You are not in any room',
+          code: 'NOT_IN_ROOM'
+        });
+        return;
+      }
+      
+      // Leave room
+      const updatedRoom = await roomService.leaveRoom(roomId, socket.user.userId);
+      
+      // Leave socket room
+      socket.leave(roomId);
+      this.userRoomMap.delete(socket.user.userId);
+      
+      // Send confirmation
+      socket.emit('room-left', {
+        success: true
+      });
+      
+      // Notify other players if room still exists
+      if (updatedRoom) {
+        socket.to(roomId).emit('player-left', {
+          playerId: socket.user.userId,
+          room: updatedRoom
+        });
+      }
+      
+      // Broadcast updated room list
+      const rooms = await roomService.getAllRooms();
+      this.io.emit('room-list', rooms);
+      
+      console.log(`${socket.user.username} left room ${roomId}`);
+    } catch (error) {
+      console.error('Leave room error:', error);
+      socket.emit('error', { 
+        message: error.message || 'Failed to leave room',
+        code: 'LEAVE_ROOM_ERROR'
+      });
+    }
+  }
+
+  async handleGetRooms(socket) {
+    try {
+      const rooms = await roomService.getAllRooms();
+      socket.emit('room-list', rooms);
+    } catch (error) {
+      console.error('Get rooms error:', error);
+      socket.emit('error', { 
+        message: 'Failed to fetch rooms',
+        code: 'GET_ROOMS_ERROR'
+      });
+    }
+  }
+
+  async handleDisconnect(socket) {
+    console.log('Client disconnected:', socket.id, 'User:', socket.user?.username);
+    
+    // Clean up user from maps
+    this.userSocketMap.delete(socket.id);
     
     // Handle leave room on disconnect
-    this.handleLeaveRoom(socket);
+    if (socket.user) {
+      await this.handleLeaveRoom(socket);
+    }
   }
 
-  getRoomList() {
-    const roomList = [];
-    
-    rooms.forEach((room) => {
-      roomList.push({
-        id: room.id,
-        name: room.name,
-        playerCount: room.players.length,
-        maxPlayers: room.maxPlayers,
-        status: room.status,
-        createdAt: room.createdAt
+  async handleSendMessage(socket, data) {
+    try {
+      // Rate limiting
+      await new Promise((resolve, reject) => {
+        this.rateLimiters.message(socket, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
       });
-    });
-    
-    return roomList;
+      
+      const roomId = this.userRoomMap.get(socket.user.userId);
+      
+      if (!roomId) {
+        socket.emit('error', { 
+          message: 'You are not in any room',
+          code: 'NOT_IN_ROOM'
+        });
+        return;
+      }
+      
+      const { message } = data;
+      
+      if (!message || message.trim().length === 0) {
+        return;
+      }
+      
+      // Sanitize message
+      const sanitizedMessage = message.trim().substring(0, 500);
+      
+      // Broadcast message to room
+      this.io.to(roomId).emit('new-message', {
+        userId: socket.user.userId,
+        username: socket.user.username,
+        message: sanitizedMessage,
+        timestamp: new Date()
+      });
+    } catch (error) {
+      console.error('Send message error:', error);
+      socket.emit('error', { 
+        message: 'Failed to send message',
+        code: 'MESSAGE_ERROR'
+      });
+    }
   }
 
-  // Cleanup old rooms (to be called periodically)
-  cleanupOldRooms() {
-    const now = Date.now();
-    const thirtyMinutes = 30 * 60 * 1000;
-    
-    rooms.forEach((room, roomId) => {
-      if (room.players.length === 0 && (now - room.createdAt) > thirtyMinutes) {
-        rooms.delete(roomId);
-        console.log(`Room ${roomId} cleaned up (inactive)`);
+  // Placeholder methods for future game logic
+  async handlePlayerReady(socket) {
+    // TODO: Implement when game logic is added
+    console.log(`Player ${socket.user.username} is ready`);
+  }
+
+  async handleSubmitSolution(socket, data) {
+    // TODO: Implement when game logic is added
+    console.log(`Player ${socket.user.username} submitted solution`);
+  }
+
+  async handleVoteProblem(socket, data) {
+    // TODO: Implement when voting system is added
+    console.log(`Player ${socket.user.username} voted for problem`);
+  }
+
+  // Start periodic cleanup interval
+  startCleanupInterval() {
+    // Run cleanup every 5 minutes
+    setInterval(async () => {
+      try {
+        await roomService.cleanupRooms();
+      } catch (error) {
+        console.error('Room cleanup error:', error);
       }
-    });
+    }, 5 * 60 * 1000);
   }
 }
 

@@ -1,19 +1,28 @@
-// QuantRooms Background Service Worker
+// QuantRooms Background Service Worker - Phase 2
+// Handles authentication and persistent connections
 
 // Import Socket.io client library
 importScripts('socket.io.min.js');
 
+const API_BASE_URL = 'http://localhost:3000';
+const STORAGE_KEYS = {
+  ACCESS_TOKEN: 'quantrooms_access_token',
+  REFRESH_TOKEN: 'quantrooms_refresh_token',
+  USER_DATA: 'quantrooms_user_data'
+};
+
 class QuantRoomsBackground {
   constructor() {
     this.socket = null;
-    this.serverUrl = 'http://localhost:3000';
+    this.authToken = null;
+    this.currentUser = null;
     this.currentRoom = null;
-    this.userId = null;
-    this.userName = null;
+    this.connectionRetries = 0;
+    this.maxRetries = 5;
     this.init();
   }
 
-  init() {
+  async init() {
     console.log('QuantRooms: Background script initialized');
     
     // Handle extension installation
@@ -31,6 +40,17 @@ class QuantRoomsBackground {
     chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       this.onTabUpdated(tabId, changeInfo, tab);
     });
+
+    // Handle alarm for token refresh
+    chrome.alarms.create('refreshToken', { periodInMinutes: 360 }); // 6 hours
+    chrome.alarms.onAlarm.addListener((alarm) => {
+      if (alarm.name === 'refreshToken') {
+        this.refreshAuthToken();
+      }
+    });
+
+    // Check auth status on startup
+    await this.checkAuthStatus();
   }
 
   onInstalled() {
@@ -38,7 +58,6 @@ class QuantRoomsBackground {
     
     // Set default settings
     chrome.storage.sync.set({
-      userId: this.generateUserId(),
       settings: {
         notifications: true,
         autoJoinRooms: false,
@@ -47,54 +66,64 @@ class QuantRoomsBackground {
     });
   }
 
-  handleMessage(message, sender, sendResponse) {
+  async handleMessage(message, sender, sendResponse) {
     switch (message.type) {
-      case 'GET_USER_ID':
-        this.getUserId().then(userId => {
-          sendResponse({ userId });
-        });
+      case 'CHECK_AUTH':
+        const authStatus = await this.checkAuthStatus();
+        sendResponse(authStatus);
         break;
 
-      case 'CONNECT_TO_SERVER':
-        this.connectToServer(message.serverUrl).then(result => {
-          sendResponse(result);
-        });
+      case 'LOGIN':
+        const loginResult = await this.login(message.data);
+        sendResponse(loginResult);
         break;
 
-      case 'GET_ACTIVE_ROOMS':
-        this.getActiveRooms().then(rooms => {
-          sendResponse({ rooms });
-        });
+      case 'LOGOUT':
+        const logoutResult = await this.logout();
+        sendResponse(logoutResult);
         break;
 
-      case 'CREATE_ROOM':
-        this.createRoom(message.data).then(result => {
-          sendResponse(result);
-        });
+      case 'REFRESH_TOKEN':
+        const refreshResult = await this.refreshAuthToken();
+        sendResponse(refreshResult);
         break;
 
-      case 'JOIN_ROOM':
-        this.joinRoom(message.data).then(result => {
-          sendResponse(result);
-        });
-        break;
-
-      case 'LEAVE_ROOM':
-        this.leaveRoom().then(result => {
-          sendResponse(result);
-        });
+      case 'CONNECT_SOCKET':
+        const connectResult = await this.connectSocket();
+        sendResponse(connectResult);
         break;
 
       case 'GET_CONNECTION_STATUS':
         sendResponse({ 
           connected: this.socket?.connected || false,
+          authenticated: !!this.authToken,
+          currentUser: this.currentUser,
           currentRoom: this.currentRoom
         });
         break;
 
-      case 'SET_USER_NAME':
-        this.userName = message.userName;
-        chrome.storage.sync.set({ userName: message.userName });
+      case 'CREATE_ROOM':
+        const createResult = await this.createRoom(message.data);
+        sendResponse(createResult);
+        break;
+
+      case 'JOIN_ROOM':
+        const joinResult = await this.joinRoom(message.data);
+        sendResponse(joinResult);
+        break;
+
+      case 'LEAVE_ROOM':
+        const leaveResult = await this.leaveRoom();
+        sendResponse(leaveResult);
+        break;
+
+      case 'GET_ACTIVE_ROOMS':
+        const rooms = await this.getActiveRooms();
+        sendResponse({ rooms });
+        break;
+
+      case 'SEND_MESSAGE':
+        this.sendMessage(message.data);
         sendResponse({ success: true });
         break;
 
@@ -114,51 +143,177 @@ class QuantRoomsBackground {
         target: { tabId: tabId },
         files: ['content.js']
       }).catch(err => {
-        // Script might already be injected
         console.log('Content script injection skipped:', err.message);
       });
     }
   }
 
-  async getUserId() {
-    const result = await chrome.storage.sync.get(['userId']);
-    if (!result.userId) {
-      const newUserId = this.generateUserId();
-      await chrome.storage.sync.set({ userId: newUserId });
-      return newUserId;
-    }
-    return result.userId;
-  }
-
-  generateUserId() {
-    return 'user_' + Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
-  }
-
-  async connectToServer(serverUrl = 'http://localhost:3000') {
+  async checkAuthStatus() {
     try {
-      if (this.socket && this.socket.connected) {
-        return { success: true, connected: true, message: 'Already connected' };
+      const result = await chrome.storage.local.get([
+        STORAGE_KEYS.ACCESS_TOKEN,
+        STORAGE_KEYS.USER_DATA
+      ]);
+      
+      if (result[STORAGE_KEYS.ACCESS_TOKEN]) {
+        this.authToken = result[STORAGE_KEYS.ACCESS_TOKEN];
+        this.currentUser = result[STORAGE_KEYS.USER_DATA];
+        
+        // Verify token is still valid
+        const response = await this.fetchAPI('/auth/profile', 'GET');
+        
+        if (response.success) {
+          this.currentUser = response.data;
+          await this.connectSocket();
+          return { authenticated: true, user: this.currentUser };
+        } else {
+          // Try to refresh token
+          return await this.refreshAuthToken();
+        }
+      }
+      
+      return { authenticated: false };
+    } catch (error) {
+      console.error('Auth check error:', error);
+      return { authenticated: false, error: error.message };
+    }
+  }
+
+  async login(credentials) {
+    try {
+      const response = await this.fetchAPI('/auth/login', 'POST', credentials);
+      
+      if (response.success) {
+        await this.saveAuthData(response.data);
+        await this.connectSocket();
+        return { success: true, user: response.data.user };
+      }
+      
+      return { success: false, error: response.error };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async logout() {
+    try {
+      if (this.authToken) {
+        const refreshToken = await this.getRefreshToken();
+        await this.fetchAPI('/auth/logout', 'POST', { refreshToken });
+      }
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+    
+    // Clear storage
+    await chrome.storage.local.remove([
+      STORAGE_KEYS.ACCESS_TOKEN,
+      STORAGE_KEYS.REFRESH_TOKEN,
+      STORAGE_KEYS.USER_DATA
+    ]);
+    
+    // Disconnect socket
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+    }
+    
+    // Reset state
+    this.authToken = null;
+    this.currentUser = null;
+    this.currentRoom = null;
+    
+    return { success: true };
+  }
+
+  async refreshAuthToken() {
+    try {
+      const refreshToken = await this.getRefreshToken();
+      if (!refreshToken) {
+        return { authenticated: false, error: 'No refresh token' };
+      }
+      
+      const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ refreshToken })
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        await this.saveAuthData(data.data);
+        return { authenticated: true, user: data.data.user };
+      }
+      
+      return { authenticated: false, error: data.error };
+    } catch (error) {
+      console.error('Token refresh error:', error);
+      return { authenticated: false, error: error.message };
+    }
+  }
+
+  async saveAuthData(data) {
+    this.authToken = data.tokens.accessToken;
+    this.currentUser = data.user;
+    
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.ACCESS_TOKEN]: data.tokens.accessToken,
+      [STORAGE_KEYS.REFRESH_TOKEN]: data.tokens.refreshToken,
+      [STORAGE_KEYS.USER_DATA]: data.user
+    });
+  }
+
+  async getRefreshToken() {
+    const result = await chrome.storage.local.get(STORAGE_KEYS.REFRESH_TOKEN);
+    return result[STORAGE_KEYS.REFRESH_TOKEN];
+  }
+
+  async connectSocket() {
+    try {
+      if (!this.authToken) {
+        return { success: false, error: 'Not authenticated' };
       }
 
-      this.serverUrl = serverUrl;
-      
-      // Initialize Socket.io connection
-      this.socket = io(serverUrl, {
+      if (this.socket && this.socket.connected) {
+        return { success: true, connected: true };
+      }
+
+      // Initialize Socket.io connection with auth
+      this.socket = io(API_BASE_URL, {
+        auth: {
+          token: this.authToken
+        },
         transports: ['websocket', 'polling'],
         reconnection: true,
-        reconnectionAttempts: 5,
+        reconnectionAttempts: this.maxRetries,
         reconnectionDelay: 1000
       });
 
       return new Promise((resolve) => {
         this.socket.on('connect', () => {
           console.log('Connected to QuantRooms server');
+          this.connectionRetries = 0;
           this.setupSocketListeners();
           resolve({ success: true, connected: true });
         });
 
         this.socket.on('connect_error', (error) => {
           console.error('Connection error:', error);
+          this.connectionRetries++;
+          
+          if (error.message === 'Authentication failed') {
+            // Try to refresh token
+            this.refreshAuthToken().then(() => {
+              if (this.authToken) {
+                this.socket.auth.token = this.authToken;
+                this.socket.connect();
+              }
+            });
+          }
+          
           resolve({ success: false, error: error.message });
         });
 
@@ -168,7 +323,7 @@ class QuantRoomsBackground {
             this.socket.disconnect();
             resolve({ success: false, error: 'Connection timeout' });
           }
-        }, 5000);
+        }, 10000);
       });
     } catch (error) {
       console.error('Failed to connect to server:', error);
@@ -177,206 +332,186 @@ class QuantRoomsBackground {
   }
 
   setupSocketListeners() {
-    // Room created
-    this.socket.on('room_created', (data) => {
+    // Room events
+    this.socket.on('room-created', (data) => {
       console.log('Room created:', data);
       this.currentRoom = data.room;
-      // Notify popup
-      chrome.runtime.sendMessage({
-        type: 'ROOM_CREATED',
-        room: data.room
-      }).catch(() => {});
+      this.broadcastToPopup('ROOM_CREATED', data);
     });
 
-    // Room joined
-    this.socket.on('room_joined', (data) => {
+    this.socket.on('room-joined', (data) => {
       console.log('Room joined:', data);
       this.currentRoom = data.room;
-      // Notify popup
-      chrome.runtime.sendMessage({
-        type: 'ROOM_JOINED',
-        room: data.room
-      }).catch(() => {});
+      this.broadcastToPopup('ROOM_JOINED', data);
     });
 
-    // Room updated
-    this.socket.on('room_list_updated', (data) => {
-      // Notify popup
-      chrome.runtime.sendMessage({
-        type: 'ROOM_LIST_UPDATED',
-        rooms: data.rooms
-      }).catch(() => {});
+    this.socket.on('room-left', (data) => {
+      console.log('Left room:', data);
+      this.currentRoom = null;
+      this.broadcastToPopup('ROOM_LEFT', data);
     });
 
-    // Player joined
-    this.socket.on('player_joined', (data) => {
+    this.socket.on('room-list', (rooms) => {
+      this.broadcastToPopup('ROOM_LIST', { rooms });
+    });
+
+    this.socket.on('room-updated', (room) => {
+      this.currentRoom = room;
+      this.broadcastToPopup('ROOM_UPDATED', { room });
+    });
+
+    this.socket.on('player-joined', (data) => {
       console.log('Player joined:', data);
-      this.currentRoom = data.room;
-      // Notify popup
-      chrome.runtime.sendMessage({
-        type: 'PLAYER_JOINED',
-        player: data.player,
-        room: data.room
-      }).catch(() => {});
+      this.broadcastToPopup('PLAYER_JOINED', data);
     });
 
-    // Player left
-    this.socket.on('player_left', (data) => {
+    this.socket.on('player-left', (data) => {
       console.log('Player left:', data);
-      this.currentRoom = data.room;
-      // Notify popup
-      chrome.runtime.sendMessage({
-        type: 'PLAYER_LEFT',
-        playerId: data.playerId,
-        room: data.room
-      }).catch(() => {});
+      this.broadcastToPopup('PLAYER_LEFT', data);
+    });
+
+    // Chat events
+    this.socket.on('new-message', (data) => {
+      this.broadcastToPopup('NEW_MESSAGE', data);
+      this.showNotification(`${data.username}: ${data.message}`);
     });
 
     // Error handling
     this.socket.on('error', (error) => {
       console.error('Socket error:', error);
-      chrome.runtime.sendMessage({
-        type: 'SOCKET_ERROR',
-        error: error.message
-      }).catch(() => {});
+      this.broadcastToPopup('SOCKET_ERROR', { error: error.message });
     });
 
     // Disconnection
     this.socket.on('disconnect', () => {
       console.log('Disconnected from server');
-      this.currentRoom = null;
-      chrome.runtime.sendMessage({
-        type: 'DISCONNECTED'
-      }).catch(() => {});
+      this.broadcastToPopup('DISCONNECTED');
     });
   }
 
-  async getActiveRooms() {
-    try {
-      if (!this.socket || !this.socket.connected) {
-        console.error('Not connected to server');
-        return [];
-      }
-
-      return new Promise((resolve) => {
-        this.socket.emit('get_rooms');
-        
-        const handleRoomList = (data) => {
-          this.socket.off('room_list', handleRoomList);
-          resolve(data.rooms || []);
-        };
-
-        this.socket.on('room_list', handleRoomList);
-
-        // Timeout after 5 seconds
-        setTimeout(() => {
-          this.socket.off('room_list', handleRoomList);
-          resolve([]);
-        }, 5000);
-      });
-    } catch (error) {
-      console.error('Failed to fetch rooms:', error);
-      return [];
-    }
-  }
-
   async createRoom(data) {
-    try {
-      if (!this.socket || !this.socket.connected) {
-        return { success: false, error: 'Not connected to server' };
-      }
-
-      const roomData = {
-        roomName: data.roomName,
-        userName: data.userName || this.userName || 'Anonymous',
-        maxPlayers: data.maxPlayers || 8,
-        difficulty: data.difficulty || 'Medium'
-      };
-
-      return new Promise((resolve) => {
-        this.socket.emit('create_room', roomData);
-
-        const handleRoomCreated = (response) => {
-          this.socket.off('room_created', handleRoomCreated);
-          this.socket.off('error', handleError);
-          resolve({ success: true, room: response.room });
-        };
-
-        const handleError = (error) => {
-          this.socket.off('room_created', handleRoomCreated);
-          this.socket.off('error', handleError);
-          resolve({ success: false, error: error.message });
-        };
-
-        this.socket.on('room_created', handleRoomCreated);
-        this.socket.on('error', handleError);
-
-        // Timeout
-        setTimeout(() => {
-          this.socket.off('room_created', handleRoomCreated);
-          this.socket.off('error', handleError);
-          resolve({ success: false, error: 'Request timeout' });
-        }, 5000);
-      });
-    } catch (error) {
-      return { success: false, error: error.message };
+    if (!this.socket || !this.socket.connected) {
+      return { success: false, error: 'Not connected to server' };
     }
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve({ success: false, error: 'Request timeout' });
+      }, 5000);
+
+      this.socket.once('room-created', (response) => {
+        clearTimeout(timeout);
+        resolve({ success: true, room: response.room });
+      });
+
+      this.socket.once('error', (error) => {
+        clearTimeout(timeout);
+        resolve({ success: false, error: error.message });
+      });
+
+      this.socket.emit('create-room', data);
+    });
   }
 
   async joinRoom(data) {
-    try {
-      if (!this.socket || !this.socket.connected) {
-        return { success: false, error: 'Not connected to server' };
-      }
-
-      const joinData = {
-        roomId: data.roomId,
-        userName: data.userName || this.userName || 'Anonymous'
-      };
-
-      return new Promise((resolve) => {
-        this.socket.emit('join_room', joinData);
-
-        const handleRoomJoined = (response) => {
-          this.socket.off('room_joined', handleRoomJoined);
-          this.socket.off('error', handleError);
-          resolve({ success: true, room: response.room });
-        };
-
-        const handleError = (error) => {
-          this.socket.off('room_joined', handleRoomJoined);
-          this.socket.off('error', handleError);
-          resolve({ success: false, error: error.message });
-        };
-
-        this.socket.on('room_joined', handleRoomJoined);
-        this.socket.on('error', handleError);
-
-        // Timeout
-        setTimeout(() => {
-          this.socket.off('room_joined', handleRoomJoined);
-          this.socket.off('error', handleError);
-          resolve({ success: false, error: 'Request timeout' });
-        }, 5000);
-      });
-    } catch (error) {
-      return { success: false, error: error.message };
+    if (!this.socket || !this.socket.connected) {
+      return { success: false, error: 'Not connected to server' };
     }
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve({ success: false, error: 'Request timeout' });
+      }, 5000);
+
+      this.socket.once('room-joined', (response) => {
+        clearTimeout(timeout);
+        resolve({ success: true, room: response.room });
+      });
+
+      this.socket.once('error', (error) => {
+        clearTimeout(timeout);
+        resolve({ success: false, error: error.message });
+      });
+
+      this.socket.emit('join-room', data);
+    });
   }
 
   async leaveRoom() {
-    try {
-      if (!this.socket || !this.socket.connected) {
-        return { success: false, error: 'Not connected to server' };
-      }
-
-      this.socket.emit('leave_room');
-      this.currentRoom = null;
-      
-      return { success: true };
-    } catch (error) {
-      return { success: false, error: error.message };
+    if (!this.socket || !this.socket.connected) {
+      return { success: false, error: 'Not connected to server' };
     }
+
+    this.socket.emit('leave-room');
+    this.currentRoom = null;
+    return { success: true };
+  }
+
+  async getActiveRooms() {
+    if (!this.socket || !this.socket.connected) {
+      return [];
+    }
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve([]);
+      }, 5000);
+
+      this.socket.once('room-list', (rooms) => {
+        clearTimeout(timeout);
+        resolve(rooms);
+      });
+
+      this.socket.emit('get-rooms');
+    });
+  }
+
+  sendMessage(data) {
+    if (this.socket && this.socket.connected) {
+      this.socket.emit('send-message', data);
+    }
+  }
+
+  async fetchAPI(endpoint, method = 'GET', body = null) {
+    const options = {
+      method,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    };
+    
+    if (this.authToken) {
+      options.headers['Authorization'] = `Bearer ${this.authToken}`;
+    }
+    
+    if (body) {
+      options.body = JSON.stringify(body);
+    }
+    
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
+    return await response.json();
+  }
+
+  broadcastToPopup(type, data) {
+    chrome.runtime.sendMessage({
+      type,
+      ...data
+    }).catch(() => {
+      // Popup might be closed
+    });
+  }
+
+  showNotification(message, title = 'QuantRooms') {
+    chrome.storage.sync.get(['settings'], (result) => {
+      if (result.settings?.notifications) {
+        chrome.notifications.create({
+          type: 'basic',
+          iconUrl: 'icons/icon128.png',
+          title,
+          message
+        });
+      }
+    });
   }
 }
 

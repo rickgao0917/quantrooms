@@ -1,17 +1,22 @@
 {
   "manifest_version": 3,
   "name": "QuantRooms",
-  "version": "1.0.0",
-  "description": "Multiplayer collaborative coding for QuantGuide.io",
+  "version": "2.0.0",
+  "description": "Multiplayer collaborative coding for QuantGuide.io with authentication and persistent rooms",
   
   "permissions": [
     "storage",
-    "activeTab"
+    "activeTab",
+    "scripting",
+    "notifications",
+    "alarms",
+    "tabs"
   ],
   
   "host_permissions": [
     "https://quantguide.io/*",
-    "http://localhost:3000/*"
+    "http://localhost:3000/*",
+    "https://localhost:3000/*"
   ],
   
   "background": {
@@ -36,5 +41,16 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
+  },
+  
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/google.svg"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   }
 }

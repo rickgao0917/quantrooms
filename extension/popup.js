@@ -1,467 +1,688 @@
-// QuantRooms Popup Script
+// QuantRooms Popup Script - Phase 2
+// Handles authentication and room management
 
-class QuantRoomsPopup {
-  constructor() {
-    this.currentRoom = null;
-    this.userName = null;
-    this.init();
+// API Configuration
+const API_BASE_URL = 'http://localhost:3000';
+const STORAGE_KEYS = {
+  ACCESS_TOKEN: 'quantrooms_access_token',
+  REFRESH_TOKEN: 'quantrooms_refresh_token',
+  USER_DATA: 'quantrooms_user_data'
+};
+
+// State management
+let socket = null;
+let currentUser = null;
+let currentRoom = null;
+let authToken = null;
+
+// DOM Elements
+let elements = {};
+
+// Initialize when DOM is loaded
+document.addEventListener('DOMContentLoaded', initialize);
+
+async function initialize() {
+  cacheElements();
+  setupEventListeners();
+  
+  // Check for OAuth callback parameters
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.has('accessToken')) {
+    await handleOAuthCallback(urlParams);
+    return;
   }
+  
+  // Check authentication status
+  await checkAuthStatus();
+}
 
-  async init() {
-    console.log('QuantRooms Popup: Initializing');
-    
-    // Set up event listeners
-    this.setupEventListeners();
-    
-    // Initialize connection status
-    await this.updateConnectionStatus();
-    
-    // Load user data
-    await this.loadUserData();
-    
-    // Listen for updates from background script
-    this.listenForUpdates();
-    
-    // Load rooms if connected
-    await this.loadRooms();
-  }
+function cacheElements() {
+  // Views
+  elements.loginView = document.getElementById('loginView');
+  elements.mainView = document.getElementById('mainView');
+  elements.loadingView = document.getElementById('loadingView');
+  
+  // Sub-views
+  elements.roomListView = document.getElementById('roomListView');
+  elements.createRoomView = document.getElementById('createRoomView');
+  elements.currentRoomView = document.getElementById('currentRoomView');
+  
+  // Auth elements
+  elements.loginForm = document.getElementById('loginForm');
+  elements.registerForm = document.getElementById('registerForm');
+  elements.googleLoginBtn = document.getElementById('googleLoginBtn');
+  elements.logoutBtn = document.getElementById('logoutBtn');
+  
+  // User info
+  elements.currentUsername = document.getElementById('currentUsername');
+  elements.currentElo = document.getElementById('currentElo');
+  
+  // Status
+  elements.connectionDot = document.getElementById('connectionDot');
+  elements.connectionStatus = document.getElementById('connectionStatus');
+  
+  // Room controls
+  elements.quickMatchBtn = document.getElementById('quickMatchBtn');
+  elements.createRoomBtn = document.getElementById('createRoomBtn');
+  elements.joinRoomBtn = document.getElementById('joinRoomBtn');
+  elements.createRoomForm = document.getElementById('createRoomForm');
+  elements.leaveRoomBtn = document.getElementById('leaveRoomBtn');
+  
+  // Room lists
+  elements.roomsList = document.getElementById('roomsList');
+  elements.playersList = document.getElementById('playersList');
+  
+  // Stats
+  elements.eloRating = document.getElementById('eloRating');
+  elements.gamesPlayed = document.getElementById('gamesPlayed');
+  elements.winRate = document.getElementById('winRate');
+  
+  // Chat
+  elements.chatMessages = document.getElementById('chatMessages');
+  elements.chatForm = document.getElementById('chatForm');
+  elements.chatInput = document.getElementById('chatInput');
+  
+  // Notification
+  elements.notification = document.getElementById('notification');
+  elements.notificationText = document.getElementById('notificationText');
+}
 
-  setupEventListeners() {
-    document.getElementById('quickMatchBtn')?.addEventListener('click', () => {
-      this.quickMatch();
+function setupEventListeners() {
+  // Tab switching
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const tab = e.target.dataset.tab;
+      switchTab(tab);
     });
-    
-    document.getElementById('createRoomBtn')?.addEventListener('click', () => {
-      this.showCreateRoomUI();
-    });
-    
-    document.getElementById('joinRoomBtn')?.addEventListener('click', () => {
-      this.showJoinRoomUI();
-    });
-  }
-
-  listenForUpdates() {
-    // Listen for messages from background script
-    chrome.runtime.onMessage.addListener((message) => {
-      switch (message.type) {
-        case 'ROOM_CREATED':
-          this.onRoomCreated(message.room);
-          break;
-        case 'ROOM_JOINED':
-          this.onRoomJoined(message.room);
-          break;
-        case 'ROOM_LIST_UPDATED':
-          this.updateRoomList(message.rooms);
-          break;
-        case 'PLAYER_JOINED':
-          this.onPlayerJoined(message.player, message.room);
-          break;
-        case 'PLAYER_LEFT':
-          this.onPlayerLeft(message.playerId, message.room);
-          break;
-        case 'DISCONNECTED':
-          this.onDisconnected();
-          break;
-        case 'SOCKET_ERROR':
-          this.showNotification(`Error: ${message.error}`, 'error');
-          break;
-      }
-    });
-  }
-
-  async updateConnectionStatus() {
-    try {
-      // First check current connection status
-      const statusResponse = await this.sendMessageToBackground('GET_CONNECTION_STATUS');
-      
-      if (!statusResponse.connected) {
-        // Try to connect if not already connected
-        const connectResponse = await this.sendMessageToBackground('CONNECT_TO_SERVER');
-        this.updateConnectionUI(connectResponse.success);
-      } else {
-        this.updateConnectionUI(true);
-        this.currentRoom = statusResponse.currentRoom;
-      }
-    } catch (error) {
-      console.error('Failed to check connection:', error);
-      this.updateConnectionUI(false);
-    }
-  }
-
-  updateConnectionUI(connected) {
-    const dot = document.getElementById('connectionDot');
-    const status = document.getElementById('connectionStatus');
-    
-    if (connected) {
-      dot.className = 'status-dot';
-      status.textContent = 'Connected to server';
-    } else {
-      dot.className = 'status-dot disconnected';
-      status.textContent = 'Server offline';
-    }
-  }
-
-  async loadUserData() {
-    try {
-      const result = await chrome.storage.sync.get(['userName', 'userStats']);
-      
-      // Load or create username
-      if (!result.userName) {
-        this.userName = await this.promptForUserName();
-      } else {
-        this.userName = result.userName;
-      }
-      
-      // Load stats
-      const stats = result.userStats || {
-        eloRating: 1200,
-        gamesPlayed: 0,
-        wins: 0
-      };
-
-      document.getElementById('eloRating').textContent = stats.eloRating;
-      document.getElementById('gamesPlayed').textContent = stats.gamesPlayed;
-      
-      const winRate = stats.gamesPlayed > 0 ? 
-        Math.round((stats.wins / stats.gamesPlayed) * 100) : 0;
-      document.getElementById('winRate').textContent = winRate + '%';
-      
-    } catch (error) {
-      console.error('Failed to load user data:', error);
-    }
-  }
-
-  async promptForUserName() {
-    const userName = prompt('Enter your username:') || 'Player' + Math.floor(Math.random() * 1000);
-    await chrome.storage.sync.set({ userName });
-    await this.sendMessageToBackground('SET_USER_NAME', { userName });
-    return userName;
-  }
-
-  async quickMatch() {
-    console.log('Quick Match clicked');
-    
-    try {
-      // Check if we're on QuantGuide.io
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      
-      if (!tab.url.includes('quantguide.io')) {
-        this.showNotification('Please navigate to QuantGuide.io first');
-        return;
-      }
-
-      // TODO: Implement quick match logic
-      this.showNotification('Finding a match...');
-      
-      // Send message to content script
-      chrome.tabs.sendMessage(tab.id, { 
-        type: 'START_QUICK_MATCH' 
-      });
-      
-    } catch (error) {
-      console.error('Quick match failed:', error);
-      this.showNotification('Failed to start quick match');
-    }
-  }
-
-  showCreateRoomUI() {
-    // Update UI to show room creation form
-    const mainContent = document.querySelector('.button-group').parentElement;
-    mainContent.innerHTML = `
-      <div class="create-room-form">
-        <h3>Create New Room</h3>
-        <input type="text" id="roomNameInput" placeholder="Room name" class="input-field" value="Room ${Math.floor(Math.random() * 1000)}">
-        <select id="maxPlayersSelect" class="input-field">
-          <option value="2">2 Players</option>
-          <option value="4" selected>4 Players</option>
-          <option value="6">6 Players</option>
-          <option value="8">8 Players</option>
-        </select>
-        <select id="difficultySelect" class="input-field">
-          <option value="Easy">Easy</option>
-          <option value="Medium" selected>Medium</option>
-          <option value="Hard">Hard</option>
-        </select>
-        <div class="button-group">
-          <button id="confirmCreateBtn" class="primary-button">Create Room</button>
-          <button id="cancelCreateBtn" class="secondary-button">Cancel</button>
-        </div>
-      </div>
-    `;
-    
-    document.getElementById('confirmCreateBtn').addEventListener('click', () => this.createRoom());
-    document.getElementById('cancelCreateBtn').addEventListener('click', () => this.resetUI());
-  }
+  });
   
-  async createRoom() {
-    const roomName = document.getElementById('roomNameInput').value.trim();
-    const maxPlayers = parseInt(document.getElementById('maxPlayersSelect').value);
-    const difficulty = document.getElementById('difficultySelect').value;
-    
-    if (!roomName) {
-      this.showNotification('Please enter a room name', 'error');
-      return;
-    }
-    
-    try {
-      const response = await this.sendMessageToBackground('CREATE_ROOM', {
-        data: { roomName, maxPlayers, difficulty, userName: this.userName }
-      });
-      
-      if (response.success) {
-        this.showNotification('Room created successfully!');
-      } else {
-        this.showNotification(response.error || 'Failed to create room', 'error');
-      }
-    } catch (error) {
-      console.error('Room creation failed:', error);
-      this.showNotification('Failed to create room', 'error');
-    }
-  }
-
-  showJoinRoomUI() {
-    // Show room list or join by code
-    const mainContent = document.querySelector('.button-group').parentElement;
-    mainContent.innerHTML = `
-      <div class="join-room-form">
-        <h3>Join Room</h3>
-        <input type="text" id="roomCodeInput" placeholder="Enter room code" class="input-field">
-        <div class="button-group">
-          <button id="confirmJoinBtn" class="primary-button">Join Room</button>
-          <button id="browseRoomsBtn" class="secondary-button">Browse Rooms</button>
-          <button id="cancelJoinBtn" class="secondary-button">Cancel</button>
-        </div>
-        <div id="roomsList" class="rooms-list"></div>
-      </div>
-    `;
-    
-    document.getElementById('confirmJoinBtn').addEventListener('click', () => this.joinRoomByCode());
-    document.getElementById('browseRoomsBtn').addEventListener('click', () => this.loadRooms());
-    document.getElementById('cancelJoinBtn').addEventListener('click', () => this.resetUI());
-  }
+  // Auth forms
+  elements.loginForm.addEventListener('submit', handleLogin);
+  elements.registerForm.addEventListener('submit', handleRegister);
+  elements.googleLoginBtn.addEventListener('click', handleGoogleLogin);
+  elements.logoutBtn.addEventListener('click', handleLogout);
   
-  async joinRoomByCode() {
-    const roomCode = document.getElementById('roomCodeInput').value.trim();
-    
-    if (!roomCode) {
-      this.showNotification('Please enter a room code', 'error');
-      return;
-    }
-    
-    try {
-      const response = await this.sendMessageToBackground('JOIN_ROOM', {
-        data: { roomId: roomCode, userName: this.userName }
-      });
-      
-      if (response.success) {
-        this.showNotification('Joined room successfully!');
-      } else {
-        this.showNotification(response.error || 'Failed to join room', 'error');
-      }
-    } catch (error) {
-      console.error('Join room failed:', error);
-      this.showNotification('Failed to join room', 'error');
-    }
-  }
+  // Room controls
+  elements.quickMatchBtn.addEventListener('click', handleQuickMatch);
+  elements.createRoomBtn.addEventListener('click', showCreateRoomView);
+  elements.joinRoomBtn.addEventListener('click', handleJoinRoom);
+  elements.createRoomForm.addEventListener('submit', handleCreateRoom);
+  elements.leaveRoomBtn.addEventListener('click', handleLeaveRoom);
   
-  async loadRooms() {
-    try {
-      const response = await this.sendMessageToBackground('GET_ACTIVE_ROOMS');
-      const rooms = response.rooms || [];
-      this.updateRoomList(rooms);
-    } catch (error) {
-      console.error('Failed to load rooms:', error);
-    }
-  }
+  // Cancel buttons
+  document.getElementById('cancelCreateBtn').addEventListener('click', showRoomListView);
   
-  updateRoomList(rooms) {
-    const roomsList = document.getElementById('roomsList');
-    if (!roomsList) return;
-    
-    if (rooms.length === 0) {
-      roomsList.innerHTML = '<p class="no-rooms">No active rooms</p>';
-    } else {
-      roomsList.innerHTML = rooms.map(room => `
-        <div class="room-item" data-room-id="${room.id}">
-          <div class="room-info">
-            <strong>${room.name}</strong>
-            <span class="room-players">${room.playerCount}/${room.maxPlayers} players</span>
-          </div>
-          <button class="join-button" data-room-id="${room.id}">Join</button>
-        </div>
-      `).join('');
-      
-      // Add click handlers
-      roomsList.querySelectorAll('.join-button').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-          const roomId = e.target.getAttribute('data-room-id');
-          this.joinRoom(roomId);
-        });
-      });
-    }
-  }
+  // Chat
+  elements.chatForm.addEventListener('submit', handleSendMessage);
   
-  async joinRoom(roomId) {
-    try {
-      const response = await this.sendMessageToBackground('JOIN_ROOM', {
-        data: { roomId, userName: this.userName }
-      });
-      
-      if (response.success) {
-        this.showNotification('Joined room successfully!');
-      } else {
-        this.showNotification(response.error || 'Failed to join room', 'error');
-      }
-    } catch (error) {
-      console.error('Join room failed:', error);
-      this.showNotification('Failed to join room', 'error');
-    }
-  }
-
-  showNotification(message, type = 'info') {
-    // Create notification element
-    const notification = document.createElement('div');
-    notification.className = `notification ${type}`;
-    notification.textContent = message;
-    notification.style.cssText = `
-      position: fixed;
-      top: 10px;
-      right: 10px;
-      background: ${type === 'error' ? '#EF4444' : '#4F46E5'};
-      color: white;
-      padding: 8px 16px;
-      border-radius: 6px;
-      z-index: 1000;
-      animation: slideIn 0.3s ease;
-    `;
-    
-    document.body.appendChild(notification);
-    
-    setTimeout(() => {
-      notification.remove();
-    }, 3000);
-  }
-  
-  onRoomCreated(room) {
-    this.currentRoom = room;
-    this.showRoomUI(room);
-  }
-  
-  onRoomJoined(room) {
-    this.currentRoom = room;
-    this.showRoomUI(room);
-  }
-  
-  onPlayerJoined(player, room) {
-    this.currentRoom = room;
-    if (this.currentRoom) {
-      this.updateRoomUI(room);
-    }
-  }
-  
-  onPlayerLeft(playerId, room) {
-    this.currentRoom = room;
-    if (this.currentRoom) {
-      this.updateRoomUI(room);
-    }
-  }
-  
-  onDisconnected() {
-    this.currentRoom = null;
-    this.updateConnectionUI(false);
-    this.resetUI();
-  }
-  
-  showRoomUI(room) {
-    const mainContent = document.querySelector('.button-group').parentElement;
-    mainContent.innerHTML = `
-      <div class="room-view">
-        <h3>Room: ${room.name}</h3>
-        <p class="room-code">Code: <strong>${room.id}</strong></p>
-        <div class="players-list">
-          <h4>Players (${room.playerCount}/${room.maxPlayers})</h4>
-          ${room.players.map(player => `
-            <div class="player-item">
-              ${player.name} ${player.isHost ? '(Host)' : ''}
-            </div>
-          `).join('')}
-        </div>
-        <button id="leaveRoomBtn" class="secondary-button">Leave Room</button>
-      </div>
-    `;
-    
-    document.getElementById('leaveRoomBtn').addEventListener('click', () => this.leaveRoom());
-  }
-  
-  updateRoomUI(room) {
-    const playersList = document.querySelector('.players-list');
-    if (playersList) {
-      playersList.innerHTML = `
-        <h4>Players (${room.playerCount}/${room.maxPlayers})</h4>
-        ${room.players.map(player => `
-          <div class="player-item">
-            ${player.name} ${player.isHost ? '(Host)' : ''}
-          </div>
-        `).join('')}
-      `;
-    }
-  }
-  
-  async leaveRoom() {
-    try {
-      const response = await this.sendMessageToBackground('LEAVE_ROOM');
-      if (response.success) {
-        this.currentRoom = null;
-        this.resetUI();
-        this.showNotification('Left room');
-      }
-    } catch (error) {
-      console.error('Failed to leave room:', error);
-    }
-  }
-  
-  resetUI() {
-    // Reload the popup to reset UI
-    window.location.reload();
-  }
-
-  sendMessageToBackground(type, data = {}) {
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({ type, ...data }, (response) => {
-        if (chrome.runtime.lastError) {
-          reject(chrome.runtime.lastError);
-        } else {
-          resolve(response || {});
-        }
-      });
-    });
-  }
-  
-  async quickMatch() {
-    // For quick match, we'll create a room with default settings
-    try {
-      const response = await this.sendMessageToBackground('CREATE_ROOM', {
-        data: {
-          roomName: `Quick Match ${Math.floor(Math.random() * 1000)}`,
-          maxPlayers: 4,
-          difficulty: 'Medium',
-          userName: this.userName
-        }
-      });
-      
-      if (response.success) {
-        this.showNotification('Quick match room created!');
-      } else {
-        this.showNotification(response.error || 'Failed to create quick match', 'error');
-      }
-    } catch (error) {
-      console.error('Quick match failed:', error);
-      this.showNotification('Failed to start quick match', 'error');
-    }
+  // Password validation
+  const passwordInput = document.getElementById('registerPassword');
+  if (passwordInput) {
+    passwordInput.addEventListener('input', validatePasswordStrength);
   }
 }
 
-// Initialize popup when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-  new QuantRoomsPopup();
-});
+// View Management
+function showView(viewName) {
+  document.querySelectorAll('.view').forEach(view => {
+    view.style.display = 'none';
+  });
+  
+  if (elements[viewName + 'View']) {
+    elements[viewName + 'View'].style.display = 'block';
+  }
+}
+
+function showSubView(subViewName) {
+  document.querySelectorAll('.sub-view').forEach(view => {
+    view.style.display = 'none';
+  });
+  
+  if (elements[subViewName + 'View']) {
+    elements[subViewName + 'View'].style.display = 'block';
+  }
+}
+
+function switchTab(tabName) {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tabName);
+  });
+  
+  document.querySelectorAll('.tab-content').forEach(content => {
+    content.classList.remove('active');
+  });
+  
+  document.getElementById(tabName + 'Tab').classList.add('active');
+}
+
+// Authentication
+async function checkAuthStatus() {
+  showView('loading');
+  
+  try {
+    // Get stored tokens
+    const result = await chrome.storage.local.get([
+      STORAGE_KEYS.ACCESS_TOKEN,
+      STORAGE_KEYS.USER_DATA
+    ]);
+    
+    if (result[STORAGE_KEYS.ACCESS_TOKEN]) {
+      authToken = result[STORAGE_KEYS.ACCESS_TOKEN];
+      currentUser = result[STORAGE_KEYS.USER_DATA];
+      
+      // Verify token is still valid
+      const response = await fetchAPI('/auth/profile', 'GET');
+      
+      if (response.success) {
+        currentUser = response.data;
+        await onAuthSuccess();
+      } else {
+        // Try to refresh token
+        await refreshAuthToken();
+      }
+    } else {
+      showView('login');
+    }
+  } catch (error) {
+    console.error('Auth check error:', error);
+    showView('login');
+  }
+}
+
+async function handleLogin(e) {
+  e.preventDefault();
+  
+  const email = document.getElementById('loginEmail').value;
+  const password = document.getElementById('loginPassword').value;
+  
+  try {
+    const response = await fetchAPI('/auth/login', 'POST', {
+      email,
+      password
+    });
+    
+    if (response.success) {
+      await saveAuthData(response.data);
+      await onAuthSuccess();
+    } else {
+      showNotification(response.error || 'Login failed', 'error');
+    }
+  } catch (error) {
+    showNotification('Login failed. Please try again.', 'error');
+  }
+}
+
+async function handleRegister(e) {
+  e.preventDefault();
+  
+  const username = document.getElementById('registerUsername').value;
+  const email = document.getElementById('registerEmail').value;
+  const password = document.getElementById('registerPassword').value;
+  const confirmPassword = document.getElementById('registerConfirmPassword').value;
+  
+  if (password !== confirmPassword) {
+    showNotification('Passwords do not match', 'error');
+    return;
+  }
+  
+  try {
+    const response = await fetchAPI('/auth/register', 'POST', {
+      username,
+      email,
+      password
+    });
+    
+    if (response.success) {
+      await saveAuthData(response.data);
+      await onAuthSuccess();
+      showNotification('Registration successful!', 'success');
+    } else {
+      showNotification(response.error || 'Registration failed', 'error');
+    }
+  } catch (error) {
+    showNotification('Registration failed. Please try again.', 'error');
+  }
+}
+
+async function handleGoogleLogin() {
+  // Open Google OAuth in a new tab
+  const authUrl = `${API_BASE_URL}/auth/google`;
+  chrome.tabs.create({ url: authUrl });
+  
+  // The OAuth callback will be handled when the extension is reopened
+  window.close();
+}
+
+async function handleOAuthCallback(params) {
+  showView('loading');
+  
+  const data = {
+    user: {
+      userId: params.get('userId'),
+      username: params.get('username'),
+      email: params.get('email') || '',
+      elo: parseInt(params.get('elo')) || 1200
+    },
+    tokens: {
+      accessToken: params.get('accessToken'),
+      refreshToken: params.get('refreshToken')
+    }
+  };
+  
+  if (params.get('error')) {
+    showNotification('Google login failed', 'error');
+    showView('login');
+    return;
+  }
+  
+  await saveAuthData(data);
+  await onAuthSuccess();
+  
+  // Clean up URL
+  window.history.replaceState({}, document.title, "popup.html");
+}
+
+async function handleLogout() {
+  try {
+    if (authToken) {
+      await fetchAPI('/auth/logout', 'POST', {
+        refreshToken: await getRefreshToken()
+      });
+    }
+  } catch (error) {
+    console.error('Logout error:', error);
+  }
+  
+  // Clear storage
+  await chrome.storage.local.remove([
+    STORAGE_KEYS.ACCESS_TOKEN,
+    STORAGE_KEYS.REFRESH_TOKEN,
+    STORAGE_KEYS.USER_DATA
+  ]);
+  
+  // Disconnect socket
+  if (socket) {
+    socket.disconnect();
+    socket = null;
+  }
+  
+  // Reset state
+  authToken = null;
+  currentUser = null;
+  currentRoom = null;
+  
+  // Show login view
+  showView('login');
+  showNotification('Logged out successfully', 'info');
+}
+
+async function saveAuthData(data) {
+  authToken = data.tokens.accessToken;
+  currentUser = data.user;
+  
+  await chrome.storage.local.set({
+    [STORAGE_KEYS.ACCESS_TOKEN]: data.tokens.accessToken,
+    [STORAGE_KEYS.REFRESH_TOKEN]: data.tokens.refreshToken,
+    [STORAGE_KEYS.USER_DATA]: data.user
+  });
+}
+
+async function refreshAuthToken() {
+  try {
+    const refreshToken = await getRefreshToken();
+    if (!refreshToken) {
+      throw new Error('No refresh token');
+    }
+    
+    const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ refreshToken })
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      await saveAuthData(data.data);
+      await onAuthSuccess();
+    } else {
+      showView('login');
+    }
+  } catch (error) {
+    console.error('Token refresh error:', error);
+    showView('login');
+  }
+}
+
+async function getRefreshToken() {
+  const result = await chrome.storage.local.get(STORAGE_KEYS.REFRESH_TOKEN);
+  return result[STORAGE_KEYS.REFRESH_TOKEN];
+}
+
+async function onAuthSuccess() {
+  showView('main');
+  showSubView('roomList');
+  updateUserInfo();
+  await connectSocket();
+  await loadUserStats();
+}
+
+// Socket Connection
+async function connectSocket() {
+  if (socket) {
+    socket.disconnect();
+  }
+  
+  updateConnectionStatus('Connecting...');
+  
+  socket = io(API_BASE_URL, {
+    auth: {
+      token: authToken
+    },
+    transports: ['websocket', 'polling']
+  });
+  
+  socket.on('connect', () => {
+    updateConnectionStatus('Connected');
+    console.log('Socket connected');
+  });
+  
+  socket.on('disconnect', () => {
+    updateConnectionStatus('Disconnected');
+    console.log('Socket disconnected');
+  });
+  
+  socket.on('connect_error', (error) => {
+    console.error('Socket connection error:', error);
+    updateConnectionStatus('Connection error');
+  });
+  
+  // Room events
+  socket.on('room-list', handleRoomList);
+  socket.on('room-created', handleRoomCreated);
+  socket.on('room-joined', handleRoomJoined);
+  socket.on('room-left', handleRoomLeft);
+  socket.on('player-joined', handlePlayerJoined);
+  socket.on('player-left', handlePlayerLeft);
+  socket.on('current-room', handleCurrentRoom);
+  
+  // Chat events
+  socket.on('new-message', handleNewMessage);
+  
+  // Error events
+  socket.on('error', handleSocketError);
+  
+  // Request initial room list
+  socket.emit('get-rooms');
+}
+
+// Room Management
+async function handleQuickMatch() {
+  showNotification('Quick match not available yet', 'info');
+}
+
+function showCreateRoomView() {
+  showSubView('createRoom');
+}
+
+function showRoomListView() {
+  showSubView('roomList');
+  socket.emit('get-rooms');
+}
+
+async function handleCreateRoom(e) {
+  e.preventDefault();
+  
+  const roomData = {
+    name: document.getElementById('roomName').value,
+    maxPlayers: parseInt(document.getElementById('maxPlayers').value),
+    difficulty: document.getElementById('difficulty').value,
+    eloMin: parseInt(document.getElementById('eloMin').value),
+    eloMax: parseInt(document.getElementById('eloMax').value)
+  };
+  
+  socket.emit('create-room', roomData);
+}
+
+async function handleJoinRoom() {
+  const roomId = prompt('Enter room ID:');
+  if (roomId) {
+    socket.emit('join-room', { roomId });
+  }
+}
+
+async function handleLeaveRoom() {
+  if (confirm('Are you sure you want to leave this room?')) {
+    socket.emit('leave-room');
+  }
+}
+
+// Socket Event Handlers
+function handleRoomList(rooms) {
+  if (!elements.roomsList) return;
+  
+  if (rooms.length === 0) {
+    elements.roomsList.innerHTML = '<div class="no-rooms">No active rooms</div>';
+    return;
+  }
+  
+  elements.roomsList.innerHTML = rooms.map(room => `
+    <div class="room-item" onclick="joinRoom('${room.room_id}')">
+      <div class="room-info">
+        <h4>${room.name}</h4>
+        <span class="room-players">${room.current_players}/${room.max_players} players</span>
+        <span class="room-players">ELO: ${room.elo_min}-${room.elo_max}</span>
+      </div>
+      <button class="btn btn-sm btn-primary">Join</button>
+    </div>
+  `).join('');
+}
+
+function handleRoomCreated(data) {
+  if (data.success) {
+    currentRoom = data.room;
+    showSubView('currentRoom');
+    updateRoomView();
+    showNotification('Room created successfully!', 'success');
+  }
+}
+
+function handleRoomJoined(data) {
+  if (data.success) {
+    currentRoom = data.room;
+    showSubView('currentRoom');
+    updateRoomView();
+    showNotification('Joined room successfully!', 'success');
+  }
+}
+
+function handleRoomLeft(data) {
+  if (data.success) {
+    currentRoom = null;
+    showSubView('roomList');
+    showNotification('Left room', 'info');
+    socket.emit('get-rooms');
+  }
+}
+
+function handleCurrentRoom(room) {
+  currentRoom = room;
+  showSubView('currentRoom');
+  updateRoomView();
+}
+
+function handlePlayerJoined(data) {
+  if (currentRoom) {
+    showNotification(`${data.player.name} joined the room`, 'info');
+    // Refresh room data
+    socket.emit('get-rooms');
+  }
+}
+
+function handlePlayerLeft(data) {
+  if (currentRoom) {
+    showNotification(`Player left the room`, 'info');
+    currentRoom = data.room;
+    updateRoomView();
+  }
+}
+
+function handleNewMessage(data) {
+  if (!elements.chatMessages) return;
+  
+  const messageEl = document.createElement('div');
+  messageEl.className = 'chat-message';
+  messageEl.innerHTML = `<strong>${data.username}:</strong> ${data.message}`;
+  
+  elements.chatMessages.appendChild(messageEl);
+  elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+}
+
+function handleSocketError(error) {
+  showNotification(error.message || 'An error occurred', 'error');
+}
+
+async function handleSendMessage(e) {
+  e.preventDefault();
+  
+  const message = elements.chatInput.value.trim();
+  if (message) {
+    socket.emit('send-message', { message });
+    elements.chatInput.value = '';
+  }
+}
+
+// UI Updates
+function updateUserInfo() {
+  if (currentUser) {
+    elements.currentUsername.textContent = currentUser.username;
+    elements.currentElo.textContent = `ELO: ${currentUser.elo || 1200}`;
+  }
+}
+
+function updateConnectionStatus(status) {
+  elements.connectionStatus.textContent = status;
+  elements.connectionDot.classList.toggle('disconnected', status !== 'Connected');
+}
+
+function updateRoomView() {
+  if (!currentRoom) return;
+  
+  document.getElementById('currentRoomName').textContent = currentRoom.name;
+  document.getElementById('currentRoomCode').textContent = `Room ID: ${currentRoom.room_id.substring(0, 8)}`;
+  document.getElementById('playerCount').textContent = currentRoom.players?.length || 0;
+  document.getElementById('maxPlayerCount').textContent = currentRoom.max_players;
+  
+  // Update players list
+  if (currentRoom.players) {
+    elements.playersList.innerHTML = currentRoom.players.map(player => `
+      <div class="player-item ${player.isHost ? 'host' : ''}">
+        <span>${player.name}</span>
+        <span>ELO: ${player.elo}</span>
+      </div>
+    `).join('');
+  }
+}
+
+async function loadUserStats() {
+  try {
+    const response = await fetchAPI('/auth/profile', 'GET');
+    
+    if (response.success) {
+      const stats = response.data.statistics;
+      elements.eloRating.textContent = response.data.elo;
+      elements.gamesPlayed.textContent = stats.gamesPlayed;
+      elements.winRate.textContent = `${stats.winRate}%`;
+    }
+  } catch (error) {
+    console.error('Failed to load stats:', error);
+  }
+}
+
+// Password Validation
+function validatePasswordStrength(e) {
+  const password = e.target.value;
+  const requirements = {
+    length: password.length >= 8,
+    uppercase: /[A-Z]/.test(password),
+    lowercase: /[a-z]/.test(password),
+    number: /[0-9]/.test(password),
+    special: /[!@#$%^&*(),.?":{}|<>]/.test(password)
+  };
+  
+  Object.keys(requirements).forEach(req => {
+    const element = document.getElementById(`req-${req}`);
+    if (element) {
+      element.classList.toggle('valid', requirements[req]);
+    }
+  });
+}
+
+// Notifications
+function showNotification(message, type = 'info') {
+  elements.notificationText.textContent = message;
+  elements.notification.className = `notification ${type}`;
+  elements.notification.style.display = 'block';
+  
+  setTimeout(() => {
+    elements.notification.style.display = 'none';
+  }, 3000);
+}
+
+// API Helper
+async function fetchAPI(endpoint, method = 'GET', body = null) {
+  try {
+    console.log(`🌐 Making ${method} request to: ${API_BASE_URL}${endpoint}`);
+    console.log('📦 Request body:', body);
+    
+    const options = {
+      method,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    };
+    
+    if (authToken) {
+      options.headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    
+    if (body) {
+      options.body = JSON.stringify(body);
+    }
+    
+    console.log('🔧 Request options:', options);
+    
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
+    console.log('📡 Response status:', response.status);
+    console.log('📡 Response headers:', Object.fromEntries(response.headers.entries()));
+    
+    const data = await response.json();
+    console.log('📄 Response data:', data);
+    
+    if (response.status === 401 && data.code === 'TOKEN_EXPIRED') {
+      // Try to refresh token
+      await refreshAuthToken();
+      // Retry the request
+      options.headers['Authorization'] = `Bearer ${authToken}`;
+      const retryResponse = await fetch(`${API_BASE_URL}${endpoint}`, options);
+      return await retryResponse.json();
+    }
+    
+    return data;
+  } catch (error) {
+    console.error('❌ fetchAPI error:', error);
+    console.error('❌ Error details:', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
+}
+
+// Global function for room joining from list
+window.joinRoom = function(roomId) {
+  socket.emit('join-room', { roomId });
+};

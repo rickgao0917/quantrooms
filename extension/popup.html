@@ -2,268 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <style>
-    body {
-      width: 300px;
-      height: 400px;
-      margin: 0;
-      padding: 0;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #f9fafb;
-    }
-    
-    .header {
-      background: linear-gradient(135deg, #4F46E5, #7C3AED);
-      color: white;
-      padding: 20px;
-      text-align: center;
-    }
-    
-    .header h1 {
-      margin: 0;
-      font-size: 18px;
-      font-weight: 600;
-    }
-    
-    .header p {
-      margin: 5px 0 0 0;
-      font-size: 12px;
-      opacity: 0.9;
-    }
-    
-    .content {
-      padding: 20px;
-    }
-    
-    .status {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 20px;
-      padding: 12px;
-      background: white;
-      border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-    }
-    
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #10B981;
-    }
-    
-    .status-dot.disconnected {
-      background: #EF4444;
-    }
-    
-    .status-text {
-      font-size: 14px;
-      color: #374151;
-    }
-    
-    .quick-actions {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-    
-    .btn {
-      padding: 12px 16px;
-      border: none;
-      border-radius: 8px;
-      font-size: 14px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    
-    .btn-primary {
-      background: #4F46E5;
-      color: white;
-    }
-    
-    .btn-primary:hover {
-      background: #4338CA;
-    }
-    
-    .btn-secondary {
-      background: white;
-      color: #374151;
-      border: 1px solid #D1D5DB;
-    }
-    
-    .btn-secondary:hover {
-      background: #F9FAFB;
-    }
-    
-    .stats {
-      margin-top: 20px;
-      padding: 16px;
-      background: white;
-      border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-    }
-    
-    .stats h3 {
-      margin: 0 0 12px 0;
-      font-size: 14px;
-      color: #374151;
-    }
-    
-    .stat-item {
-      display: flex;
-      justify-content: space-between;
-      margin-bottom: 8px;
-      font-size: 13px;
-    }
-    
-    .stat-label {
-      color: #6B7280;
-    }
-    
-    .stat-value {
-      color: #111827;
-      font-weight: 500;
-    }
-    
-    .button-group {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-    
-    .primary-button {
-      background: #4F46E5;
-      color: white;
-      padding: 12px 16px;
-      border: none;
-      border-radius: 8px;
-      font-size: 14px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    
-    .primary-button:hover {
-      background: #4338CA;
-    }
-    
-    .secondary-button {
-      background: white;
-      color: #374151;
-      padding: 12px 16px;
-      border: 1px solid #D1D5DB;
-      border-radius: 8px;
-      font-size: 14px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    
-    .secondary-button:hover {
-      background: #F9FAFB;
-    }
-    
-    .input-field {
-      width: 100%;
-      padding: 8px 12px;
-      border: 1px solid #D1D5DB;
-      border-radius: 6px;
-      font-size: 14px;
-      margin-bottom: 12px;
-      box-sizing: border-box;
-    }
-    
-    .rooms-list {
-      max-height: 200px;
-      overflow-y: auto;
-      margin-top: 12px;
-    }
-    
-    .room-item {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 12px;
-      background: white;
-      border: 1px solid #E5E7EB;
-      border-radius: 6px;
-      margin-bottom: 8px;
-    }
-    
-    .room-info {
-      flex: 1;
-    }
-    
-    .room-players {
-      display: block;
-      font-size: 12px;
-      color: #6B7280;
-      margin-top: 4px;
-    }
-    
-    .join-button {
-      background: #4F46E5;
-      color: white;
-      border: none;
-      padding: 6px 12px;
-      border-radius: 4px;
-      font-size: 12px;
-      cursor: pointer;
-    }
-    
-    .no-rooms {
-      text-align: center;
-      color: #6B7280;
-      padding: 20px;
-    }
-    
-    .notification {
-      animation: slideIn 0.3s ease;
-    }
-    
-    @keyframes slideIn {
-      from {
-        transform: translateX(100%);
-        opacity: 0;
-      }
-      to {
-        transform: translateX(0);
-        opacity: 1;
-      }
-    }
-    
-    .room-view h3 {
-      margin: 0 0 12px 0;
-      font-size: 16px;
-      color: #111827;
-    }
-    
-    .room-code {
-      font-size: 14px;
-      color: #6B7280;
-      margin-bottom: 16px;
-    }
-    
-    .players-list {
-      margin-bottom: 16px;
-    }
-    
-    .players-list h4 {
-      margin: 0 0 8px 0;
-      font-size: 14px;
-      color: #374151;
-    }
-    
-    .player-item {
-      padding: 8px 12px;
-      background: #F9FAFB;
-      border-radius: 4px;
-      margin-bottom: 4px;
-      font-size: 13px;
-    }
-  </style>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="header">
@@ -272,34 +11,178 @@
   </div>
   
   <div class="content">
-    <div class="status">
-      <div class="status-dot" id="connectionDot"></div>
-      <span class="status-text" id="connectionStatus">Connecting...</span>
+    <!-- Login View -->
+    <div id="loginView" class="view" style="display: none;">
+      <h2>Welcome to QuantRooms</h2>
+      <p class="subtitle">Sign in to start competing</p>
+      
+      <div class="auth-tabs">
+        <button class="tab-btn active" data-tab="login">Login</button>
+        <button class="tab-btn" data-tab="register">Register</button>
+      </div>
+      
+      <!-- Login Form -->
+      <div id="loginTab" class="tab-content active">
+        <form id="loginForm">
+          <input type="email" id="loginEmail" placeholder="Email" class="input-field" required>
+          <input type="password" id="loginPassword" placeholder="Password" class="input-field" required>
+          <button type="submit" class="btn btn-primary">Login</button>
+        </form>
+        
+        <div class="divider">OR</div>
+        
+        <button id="googleLoginBtn" class="btn btn-google">
+          <img src="icons/google.svg" alt="Google" class="google-icon">
+          Continue with Google
+        </button>
+      </div>
+      
+      <!-- Register Form -->
+      <div id="registerTab" class="tab-content">
+        <form id="registerForm">
+          <input type="text" id="registerUsername" placeholder="Username" class="input-field" required>
+          <input type="email" id="registerEmail" placeholder="Email" class="input-field" required>
+          <input type="password" id="registerPassword" placeholder="Password" class="input-field" required>
+          <input type="password" id="registerConfirmPassword" placeholder="Confirm Password" class="input-field" required>
+          <div class="password-requirements">
+            <p>Password must contain:</p>
+            <ul>
+              <li id="req-length">At least 8 characters</li>
+              <li id="req-uppercase">One uppercase letter</li>
+              <li id="req-lowercase">One lowercase letter</li>
+              <li id="req-number">One number</li>
+              <li id="req-special">One special character</li>
+            </ul>
+          </div>
+          <button type="submit" class="btn btn-primary">Register</button>
+        </form>
+      </div>
     </div>
     
-    <div class="button-group">
-      <button class="btn btn-primary" id="quickMatchBtn">Quick Match</button>
-      <button class="btn btn-secondary" id="createRoomBtn">Create Room</button>
-      <button class="btn btn-secondary" id="joinRoomBtn">Join Room</button>
+    <!-- Main View (Authenticated) -->
+    <div id="mainView" class="view" style="display: none;">
+      <div class="user-header">
+        <div class="user-info">
+          <span class="username" id="currentUsername">Guest</span>
+          <span class="elo" id="currentElo">ELO: 1200</span>
+        </div>
+        <button id="logoutBtn" class="btn-text">Logout</button>
+      </div>
+      
+      <div class="status">
+        <div class="status-dot" id="connectionDot"></div>
+        <span class="status-text" id="connectionStatus">Connecting...</span>
+      </div>
+      
+      <!-- Room List View -->
+      <div id="roomListView" class="sub-view">
+        <div class="button-group">
+          <button class="btn btn-primary" id="quickMatchBtn">Quick Match</button>
+          <button class="btn btn-secondary" id="createRoomBtn">Create Room</button>
+          <button class="btn btn-secondary" id="joinRoomBtn">Join Room</button>
+        </div>
+        
+        <div class="rooms-section">
+          <h3>Active Rooms</h3>
+          <div id="roomsList" class="rooms-list">
+            <div class="no-rooms">No active rooms</div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Create Room View -->
+      <div id="createRoomView" class="sub-view" style="display: none;">
+        <h3>Create New Room</h3>
+        <form id="createRoomForm">
+          <input type="text" id="roomName" placeholder="Room Name" class="input-field" required>
+          
+          <label for="maxPlayers">Max Players</label>
+          <select id="maxPlayers" class="input-field">
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4" selected>4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+          </select>
+          
+          <label for="difficulty">Difficulty</label>
+          <select id="difficulty" class="input-field">
+            <option value="Easy">Easy</option>
+            <option value="Medium" selected>Medium</option>
+            <option value="Hard">Hard</option>
+            <option value="Mixed">Mixed</option>
+          </select>
+          
+          <label for="eloRange">ELO Range</label>
+          <div class="elo-range">
+            <input type="number" id="eloMin" placeholder="Min" value="0" min="0" max="3000" class="input-field half">
+            <span>-</span>
+            <input type="number" id="eloMax" placeholder="Max" value="3000" min="0" max="3000" class="input-field half">
+          </div>
+          
+          <div class="button-group">
+            <button type="submit" class="btn btn-primary">Create Room</button>
+            <button type="button" class="btn btn-secondary" id="cancelCreateBtn">Cancel</button>
+          </div>
+        </form>
+      </div>
+      
+      <!-- Current Room View -->
+      <div id="currentRoomView" class="sub-view" style="display: none;">
+        <div class="room-header">
+          <h3 id="currentRoomName">Room Name</h3>
+          <span class="room-code" id="currentRoomCode">Room Code: XXXX</span>
+        </div>
+        
+        <div class="players-list">
+          <h4>Players (<span id="playerCount">1</span>/<span id="maxPlayerCount">8</span>)</h4>
+          <div id="playersList"></div>
+        </div>
+        
+        <div class="room-chat">
+          <h4>Chat</h4>
+          <div id="chatMessages" class="chat-messages"></div>
+          <form id="chatForm" class="chat-form">
+            <input type="text" id="chatInput" placeholder="Type a message..." class="input-field">
+            <button type="submit" class="btn btn-sm">Send</button>
+          </form>
+        </div>
+        
+        <button class="btn btn-danger" id="leaveRoomBtn">Leave Room</button>
+      </div>
+      
+      <div class="stats">
+        <h3>Your Stats</h3>
+        <div class="stat-item">
+          <span class="stat-label">ELO Rating</span>
+          <span class="stat-value" id="eloRating">1200</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Games Played</span>
+          <span class="stat-value" id="gamesPlayed">0</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Win Rate</span>
+          <span class="stat-value" id="winRate">0%</span>
+        </div>
+      </div>
     </div>
     
-    <div class="stats">
-      <h3>Your Stats</h3>
-      <div class="stat-item">
-        <span class="stat-label">ELO Rating</span>
-        <span class="stat-value" id="eloRating">1200</span>
-      </div>
-      <div class="stat-item">
-        <span class="stat-label">Games Played</span>
-        <span class="stat-value" id="gamesPlayed">0</span>
-      </div>
-      <div class="stat-item">
-        <span class="stat-label">Win Rate</span>
-        <span class="stat-value" id="winRate">0%</span>
-      </div>
+    <!-- Loading View -->
+    <div id="loadingView" class="view">
+      <div class="loading-spinner"></div>
+      <p>Loading...</p>
+    </div>
+    
+    <!-- Error/Notification Container -->
+    <div id="notification" class="notification" style="display: none;">
+      <span id="notificationText"></span>
     </div>
   </div>
   
+  <script src="socket.io.min.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

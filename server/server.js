@@ -1,319 +1,242 @@
-// QuantRooms Server
-// Phase 1: Express + Socket.io implementation
+// QuantRooms Server - Phase 2
+// Express + Socket.io + PostgreSQL + JWT Authentication
 
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const path = require('path');
+const passport = require('./config/passport');
 require('dotenv').config();
 
+// Import middleware
+const { 
+  securityHeaders, 
+  generalLimiter, 
+  compressionMiddleware, 
+  sanitizeRequest,
+  corsOptions 
+} = require('./middleware/security');
+
 // Import routes
-const { router: healthRouter } = require('./routes/health');
-const { router: roomsRouter, setSocketHandler } = require('./routes/rooms');
+const healthRouter = require('./routes/health').router;
+const authRouter = require('./routes/auth');
+const roomsRouter = require('./routes/rooms');
+const usersRouter = require('./routes/users');
+
+// Import socket handler
+const SocketHandler = require('./socket/socketHandler');
+
+// Import database
+const db = require('./database/connection');
 
 // Initialize Express app
 const app = express();
 const server = http.createServer(app);
 
-// Socket.io configuration
+// Socket.io configuration with authentication
 const io = socketIo(server, {
-  cors: {
-    origin: [
-      'chrome-extension://*',
-      'http://localhost:*',
-      'https://quantguide.io'
-    ],
-    methods: ['GET', 'POST'],
-    credentials: true
-  }
+  cors: corsOptions,
+  transports: ['websocket', 'polling'],
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
 
-// Middleware
-app.use(cors({
-  origin: (origin, callback) => {
-    // Allow Chrome extensions, localhost, and QuantGuide.io
-    if (!origin || 
-        origin.startsWith('chrome-extension://') || 
-        origin.includes('localhost') ||
-        origin.includes('quantguide.io')) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true
-}));
+// Apply security middleware
+app.use(securityHeaders);
+app.use(compressionMiddleware);
+app.use(generalLimiter);
+app.use(sanitizeRequest);
 
-app.use(express.json());
+// CORS middleware
+app.use(cors(corsOptions));
+
+// Body parsing middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Initialize Passport
+app.use(passport.initialize());
+
+// Serve static files
 app.use(express.static('public'));
 
-// Socket handler for room management
-class SocketHandler {
-  constructor(io) {
-    this.io = io;
-    this.rooms = new Map(); // roomId -> room data
-    this.userRooms = new Map(); // userId -> roomId
-  }
-
-  handleConnection(socket) {
-    console.log(`New client connected: ${socket.id}`);
-
-    // User info stored on socket
-    socket.userId = null;
-    socket.currentRoom = null;
-
-    // Handle room creation
-    socket.on('create_room', (data) => {
-      const { roomName, maxPlayers = 8, difficulty = 'Medium', userName } = data;
-      
-      if (!roomName || !userName) {
-        socket.emit('error', { message: 'Room name and user name are required' });
-        return;
-      }
-
-      // Generate room ID
-      const roomId = this.generateRoomId();
-      
-      // Create room
-      const room = {
-        id: roomId,
-        name: roomName,
-        host: socket.id,
-        players: [{
-          id: socket.id,
-          name: userName,
-          isHost: true,
-          joinedAt: new Date()
-        }],
-        maxPlayers,
-        difficulty,
-        createdAt: new Date(),
-        status: 'waiting' // waiting, in_progress, completed
-      };
-
-      // Store room
-      this.rooms.set(roomId, room);
-      this.userRooms.set(socket.id, roomId);
-      
-      // Join socket.io room
-      socket.join(roomId);
-      socket.userId = socket.id;
-      socket.currentRoom = roomId;
-
-      // Emit success
-      socket.emit('room_created', {
-        room: this.sanitizeRoom(room),
-        playerId: socket.id
-      });
-
-      // Broadcast room list update
-      this.broadcastRoomList();
-      
-      console.log(`Room created: ${roomId} by ${userName}`);
-    });
-
-    // Handle room joining
-    socket.on('join_room', (data) => {
-      const { roomId, userName } = data;
-      
-      if (!roomId || !userName) {
-        socket.emit('error', { message: 'Room ID and user name are required' });
-        return;
-      }
-
-      const room = this.rooms.get(roomId);
-      
-      if (!room) {
-        socket.emit('error', { message: 'Room not found' });
-        return;
-      }
-
-      if (room.players.length >= room.maxPlayers) {
-        socket.emit('error', { message: 'Room is full' });
-        return;
-      }
-
-      if (room.status !== 'waiting') {
-        socket.emit('error', { message: 'Room has already started' });
-        return;
-      }
-
-      // Add player to room
-      const player = {
-        id: socket.id,
-        name: userName,
-        isHost: false,
-        joinedAt: new Date()
-      };
-
-      room.players.push(player);
-      this.userRooms.set(socket.id, roomId);
-      
-      // Join socket.io room
-      socket.join(roomId);
-      socket.userId = socket.id;
-      socket.currentRoom = roomId;
-
-      // Emit success to joining player
-      socket.emit('room_joined', {
-        room: this.sanitizeRoom(room),
-        playerId: socket.id
-      });
-
-      // Notify other players
-      socket.to(roomId).emit('player_joined', {
-        player: player,
-        room: this.sanitizeRoom(room)
-      });
-
-      // Broadcast room list update
-      this.broadcastRoomList();
-      
-      console.log(`${userName} joined room: ${roomId}`);
-    });
-
-    // Handle leaving room
-    socket.on('leave_room', () => {
-      this.handleLeaveRoom(socket);
-    });
-
-    // Handle getting room list
-    socket.on('get_rooms', () => {
-      const rooms = Array.from(this.rooms.values()).map(room => 
-        this.sanitizeRoom(room)
-      );
-      socket.emit('room_list', { rooms });
-    });
-
-    // Handle disconnection
-    socket.on('disconnect', () => {
-      console.log(`Client disconnected: ${socket.id}`);
-      this.handleLeaveRoom(socket);
-    });
-  }
-
-  handleLeaveRoom(socket) {
-    const roomId = this.userRooms.get(socket.id);
-    
-    if (!roomId) return;
-
-    const room = this.rooms.get(roomId);
-    if (!room) return;
-
-    // Remove player from room
-    room.players = room.players.filter(p => p.id !== socket.id);
-    this.userRooms.delete(socket.id);
-
-    // Leave socket.io room
-    socket.leave(roomId);
-
-    // If room is empty, delete it
-    if (room.players.length === 0) {
-      this.rooms.delete(roomId);
-      console.log(`Room ${roomId} deleted (empty)`);
-    } else {
-      // If host left, assign new host
-      if (room.host === socket.id && room.players.length > 0) {
-        room.host = room.players[0].id;
-        room.players[0].isHost = true;
-        
-        // Notify new host
-        this.io.to(room.host).emit('host_changed', {
-          room: this.sanitizeRoom(room)
-        });
-      }
-
-      // Notify other players
-      socket.to(roomId).emit('player_left', {
-        playerId: socket.id,
-        room: this.sanitizeRoom(room)
-      });
-    }
-
-    // Clear socket data
-    socket.userId = null;
-    socket.currentRoom = null;
-
-    // Broadcast room list update
-    this.broadcastRoomList();
-  }
-
-  broadcastRoomList() {
-    const rooms = Array.from(this.rooms.values()).map(room => 
-      this.sanitizeRoom(room)
-    );
-    this.io.emit('room_list_updated', { rooms });
-  }
-
-  sanitizeRoom(room) {
-    // Return room data without sensitive information
-    return {
-      id: room.id,
-      name: room.name,
-      host: room.host,
-      players: room.players.map(p => ({
-        id: p.id,
-        name: p.name,
-        isHost: p.isHost
-      })),
-      playerCount: room.players.length,
-      maxPlayers: room.maxPlayers,
-      difficulty: room.difficulty,
-      status: room.status,
-      createdAt: room.createdAt
-    };
-  }
-
-  generateRoomId() {
-    // Generate a 6-character room ID
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let roomId = '';
-    for (let i = 0; i < 6; i++) {
-      roomId += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return roomId;
-  }
-}
-
-// Create socket handler instance
-const socketHandler = new SocketHandler(io);
-setSocketHandler(socketHandler);
-
-// Socket.io connection handling
-io.on('connection', (socket) => {
-  socketHandler.handleConnection(socket);
-});
-
-// Routes
+// API Routes
 app.use('/api/health', healthRouter);
-app.use('/api', roomsRouter);
+app.use('/auth', authRouter);
+app.use('/api/rooms', roomsRouter);
+app.use('/api/users', usersRouter);
 
-// Root route
+// Root endpoint
 app.get('/', (req, res) => {
   res.json({
     name: 'QuantRooms Server',
-    version: '1.0.0',
-    status: 'running',
+    version: '2.0.0',
+    phase: 'Phase 2 - Database & Authentication',
+    status: 'operational',
+    features: [
+      'JWT Authentication',
+      'Google OAuth 2.0',
+      'PostgreSQL Database',
+      'Persistent Room Management',
+      'User Profiles & Statistics',
+      'WebSocket Authentication',
+      'Rate Limiting & Security'
+    ],
     endpoints: {
       health: '/api/health',
-      rooms: '/api/rooms',
-      websocket: 'ws://localhost:3000'
-    }
+      auth: {
+        register: 'POST /auth/register',
+        login: 'POST /auth/login',
+        logout: 'POST /auth/logout',
+        refresh: 'POST /auth/refresh',
+        profile: 'GET /auth/profile',
+        google: 'GET /auth/google',
+        googleCallback: 'GET /auth/google/callback'
+      },
+      rooms: {
+        list: 'GET /api/rooms',
+        create: 'POST /api/rooms',
+        details: 'GET /api/rooms/:id',
+        join: 'POST /api/rooms/:id/join',
+        leave: 'DELETE /api/rooms/:id/leave'
+      },
+      users: {
+        profile: 'GET /api/users/profile',
+        updateProfile: 'PUT /api/users/profile',
+        changePassword: 'PUT /api/users/password',
+        stats: 'GET /api/users/:id/stats',
+        history: 'GET /api/users/:id/history',
+        leaderboard: 'GET /api/users/leaderboard'
+      }
+    },
+    socketEvents: {
+      client: [
+        'create-room',
+        'join-room',
+        'leave-room',
+        'get-rooms',
+        'send-message',
+        'ready',
+        'submit-solution',
+        'vote-problem'
+      ],
+      server: [
+        'room-created',
+        'room-joined',
+        'room-left',
+        'room-list',
+        'room-updated',
+        'player-joined',
+        'player-left',
+        'new-message',
+        'error',
+        'current-room'
+      ]
+    },
+    documentation: 'https://github.com/yourusername/quantrooms'
   });
 });
 
+// Initialize Socket.io handler
+const socketHandler = new SocketHandler(io);
+socketHandler.initialize();
+
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Server error:', err);
-  res.status(500).json({ error: 'Internal server error' });
+  console.error('Global error handler:', err);
+  
+  // Handle CORS errors
+  if (err.message === 'Not allowed by CORS') {
+    return res.status(403).json({
+      success: false,
+      error: 'CORS policy violation'
+    });
+  }
+  
+  // Handle validation errors
+  if (err.name === 'ValidationError') {
+    return res.status(400).json({
+      success: false,
+      error: 'Validation failed',
+      details: err.details
+    });
+  }
+  
+  // Handle JWT errors
+  if (err.name === 'JsonWebTokenError') {
+    return res.status(401).json({
+      success: false,
+      error: 'Invalid token'
+    });
+  }
+  
+  // Default error response
+  res.status(err.status || 500).json({
+    success: false,
+    error: err.message || 'Internal server error'
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Endpoint not found'
+  });
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, shutting down gracefully...');
+  
+  // Close server
+  server.close(() => {
+    console.log('HTTP server closed');
+  });
+  
+  // Close database connections
+  await db.destroy();
+  console.log('Database connections closed');
+  
+  // Close socket.io
+  io.close(() => {
+    console.log('Socket.io server closed');
+    process.exit(0);
+  });
 });
 
 // Start server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`QuantRooms server running on port ${PORT}`);
-  console.log(`WebSocket server ready for connections`);
+  console.log(`
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║              QuantRooms Server v2.0.0                     ║
+║              Phase 2: Database & Authentication           ║
+║                                                           ║
+║  Server running on port ${PORT}                              ║
+║  Environment: ${process.env.NODE_ENV || 'development'}                          ║
+║                                                           ║
+║  Features:                                                ║
+║  ✓ JWT Authentication                                     ║
+║  ✓ Google OAuth 2.0                                       ║
+║  ✓ PostgreSQL Database                                    ║
+║  ✓ WebSocket Authentication                               ║
+║  ✓ Rate Limiting & Security                               ║
+║                                                           ║
+║  API Docs: http://localhost:${PORT}/                         ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝
+  `);
+  
+  // Log database connection status
+  db.raw('SELECT 1')
+    .then(() => {
+      console.log('✅ Database connection verified');
+    })
+    .catch((err) => {
+      console.error('❌ Database connection failed:', err.message);
+      console.error('Please ensure PostgreSQL is running and configured correctly');
+    });
 });
-
-module.exports = { app, server, io };
