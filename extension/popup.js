@@ -115,6 +115,17 @@ function setupEventListeners() {
   // Chat
   elements.chatForm.addEventListener('submit', handleSendMessage);
   
+  // Room list event delegation for join buttons
+  elements.roomsList.addEventListener('click', (e) => {
+    if (e.target.classList.contains('join-room-btn')) {
+      const roomItem = e.target.closest('.room-item');
+      const roomId = roomItem.dataset.roomId;
+      if (roomId) {
+        joinRoom(roomId);
+      }
+    }
+  });
+  
   // Password validation
   const passwordInput = document.getElementById('registerPassword');
   if (passwordInput) {
@@ -134,12 +145,16 @@ function showView(viewName) {
 }
 
 function showSubView(subViewName) {
+  console.log('🔄 Switching to sub-view:', subViewName);
   document.querySelectorAll('.sub-view').forEach(view => {
     view.style.display = 'none';
   });
   
   if (elements[subViewName + 'View']) {
     elements[subViewName + 'View'].style.display = 'block';
+    console.log('✅ Sub-view switched to:', subViewName);
+  } else {
+    console.error('❌ Sub-view not found:', subViewName);
   }
 }
 
@@ -381,21 +396,23 @@ async function connectSocket() {
     auth: {
       token: authToken
     },
-    transports: ['websocket', 'polling']
+    transports: ['websocket', 'polling'],
+    timeout: 20000,
+    forceNew: true
   });
   
   socket.on('connect', () => {
     updateConnectionStatus('Connected');
-    console.log('Socket connected');
+    console.log('🔌 Socket connected');
   });
   
   socket.on('disconnect', () => {
     updateConnectionStatus('Disconnected');
-    console.log('Socket disconnected');
+    console.log('🔌 Socket disconnected');
   });
   
   socket.on('connect_error', (error) => {
-    console.error('Socket connection error:', error);
+    console.error('🚨 Socket connection error:', error);
     updateConnectionStatus('Connection error');
   });
   
@@ -454,8 +471,21 @@ async function handleJoinRoom() {
 }
 
 async function handleLeaveRoom() {
-  if (confirm('Are you sure you want to leave this room?')) {
+  console.log('🚪 Leave room button clicked');
+  
+  // Update UI immediately to prevent issues with popup closing
+  currentRoom = null;
+  showSubView('roomList');
+  showNotification('Leaving room...', 'info');
+  
+  // Send leave-room event
+  if (socket && socket.connected) {
+    console.log('🚪 Sending leave-room event');
     socket.emit('leave-room');
+    // Request updated room list
+    socket.emit('get-rooms');
+  } else {
+    console.error('❌ Socket not connected when trying to leave room');
   }
 }
 
@@ -469,41 +499,53 @@ function handleRoomList(rooms) {
   }
   
   elements.roomsList.innerHTML = rooms.map(room => `
-    <div class="room-item" onclick="joinRoom('${room.room_id}')">
+    <div class="room-item" data-room-id="${room.room_id}">
       <div class="room-info">
         <h4>${room.name}</h4>
         <span class="room-players">${room.current_players}/${room.max_players} players</span>
         <span class="room-players">ELO: ${room.elo_min}-${room.elo_max}</span>
       </div>
-      <button class="btn btn-sm btn-primary">Join</button>
+      <button class="btn btn-sm btn-primary join-room-btn">Join</button>
     </div>
   `).join('');
 }
 
 function handleRoomCreated(data) {
+  console.log('🏠 handleRoomCreated called with data:', data);
   if (data.success) {
+    console.log('✅ Room created successfully, updating UI');
     currentRoom = data.room;
     showSubView('currentRoom');
     updateRoomView();
     showNotification('Room created successfully!', 'success');
+  } else {
+    console.error('❌ Room creation failed:', data);
   }
 }
 
 function handleRoomJoined(data) {
+  console.log('🏠 handleRoomJoined called with data:', data);
   if (data.success) {
+    console.log('✅ Room joined successfully, updating UI');
     currentRoom = data.room;
     showSubView('currentRoom');
     updateRoomView();
     showNotification('Joined room successfully!', 'success');
+  } else {
+    console.error('❌ Room join failed:', data);
   }
 }
 
 function handleRoomLeft(data) {
+  console.log('🚪 handleRoomLeft called with data:', data);
   if (data.success) {
+    console.log('✅ Room left successfully, updating UI');
     currentRoom = null;
     showSubView('roomList');
     showNotification('Left room', 'info');
     socket.emit('get-rooms');
+  } else {
+    console.error('❌ Room left failed:', data);
   }
 }
 
@@ -682,7 +724,13 @@ async function fetchAPI(endpoint, method = 'GET', body = null) {
   }
 }
 
-// Global function for room joining from list
-window.joinRoom = function(roomId) {
+// Function for room joining from list
+function joinRoom(roomId) {
+  console.log('🏠 Attempting to join room:', roomId);
+  if (!socket || !socket.connected) {
+    console.error('❌ Socket not connected');
+    showNotification('Connection error. Please try again.', 'error');
+    return;
+  }
   socket.emit('join-room', { roomId });
-};
+}
