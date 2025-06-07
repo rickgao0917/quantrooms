@@ -17,6 +17,7 @@ class QuantRoomsBackground {
     this.authToken = null;
     this.currentUser = null;
     this.currentRoom = null;
+    this.activeGame = null;
     this.connectionRetries = 0;
     this.maxRetries = 5;
     this.init();
@@ -125,6 +126,37 @@ class QuantRoomsBackground {
       case 'SEND_MESSAGE':
         this.sendMessage(message.data);
         sendResponse({ success: true });
+        break;
+
+      case 'START_GAME':
+        const startResult = await this.startGame();
+        sendResponse(startResult);
+        break;
+
+      case 'PLAYER_READY':
+        const readyResult = await this.playerReady(message.data);
+        sendResponse(readyResult);
+        break;
+
+      case 'VOTE_PROBLEM':
+        const voteResult = await this.voteProblem(message.data);
+        sendResponse(voteResult);
+        break;
+
+      case 'LOGIN_STATUS_UPDATE':
+        // From content script
+        if (this.activeGame && this.activeGame.status === 'waiting_for_ready') {
+          this.checkReadyStatus(message.isLoggedIn);
+        }
+        sendResponse({ received: true });
+        break;
+
+      case 'SUBMISSION_RESULT':
+        // From content script
+        if (this.activeGame && message.result.solved) {
+          this.submitSolution(true);
+        }
+        sendResponse({ received: true });
         break;
 
       default:
@@ -387,6 +419,65 @@ class QuantRoomsBackground {
       console.log('Disconnected from server');
       this.broadcastToPopup('DISCONNECTED');
     });
+
+    // Game events
+    this.socket.on('game-started', (data) => {
+      console.log('Game started:', data);
+      this.activeGame = data.gameState;
+      this.broadcastToPopup('GAME_STARTED', data);
+      
+      // Notify content scripts to start monitoring
+      this.broadcastToContentScripts({ type: 'GAME_STARTED' });
+      
+      // Check if player is logged in on QuantGuide
+      this.checkQuantGuideLogin();
+    });
+
+    this.socket.on('ready-update', (data) => {
+      this.broadcastToPopup('READY_UPDATE', data);
+    });
+
+    this.socket.on('voting-started', (data) => {
+      this.activeGame = data.gameState;
+      this.broadcastToPopup('VOTING_STARTED', data);
+    });
+
+    this.socket.on('vote-update', (data) => {
+      this.broadcastToPopup('VOTE_UPDATE', data);
+    });
+
+    this.socket.on('game-problem-selected', (data) => {
+      this.activeGame.currentProblem = data.problem;
+      this.activeGame.status = 'playing';
+      this.broadcastToPopup('PROBLEM_SELECTED', data);
+      
+      // Open problem in new tab
+      chrome.tabs.create({
+        url: data.problem.url,
+        active: true
+      });
+      
+      // Start monitoring for submissions
+      this.broadcastToContentScripts({ type: 'GAME_STARTED' });
+    });
+
+    this.socket.on('player-solved', (data) => {
+      this.broadcastToPopup('PLAYER_SOLVED', data);
+      this.showNotification(`${data.username} solved in ${data.timeElapsed}s! (Position: ${data.position})`);
+    });
+
+    this.socket.on('game-ended', (data) => {
+      this.activeGame = null;
+      this.broadcastToPopup('GAME_ENDED', data);
+      this.broadcastToContentScripts({ type: 'GAME_ENDED' });
+      
+      const winner = data.winner;
+      const userEloChange = data.eloChanges[this.currentUser.userId];
+      this.showNotification(
+        `Game Over! Winner: ${winner.username}. Your ELO: ${userEloChange > 0 ? '+' : ''}${userEloChange}`,
+        'Game Finished'
+      );
+    });
   }
 
   async createRoom(data) {
@@ -511,6 +602,92 @@ class QuantRoomsBackground {
           message
         });
       }
+    });
+  }
+
+  // Game-related methods
+  async startGame() {
+    if (!this.socket || !this.socket.connected) {
+      return { success: false, error: 'Not connected to server' };
+    }
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve({ success: false, error: 'Request timeout' });
+      }, 5000);
+
+      this.socket.once('game-started', (response) => {
+        clearTimeout(timeout);
+        resolve({ success: true });
+      });
+
+      this.socket.once('error', (error) => {
+        clearTimeout(timeout);
+        resolve({ success: false, error: error.message });
+      });
+
+      this.socket.emit('start-game');
+    });
+  }
+
+  async checkQuantGuideLogin() {
+    // Query all tabs to find QuantGuide tabs
+    const tabs = await chrome.tabs.query({ url: '*://quantguide.io/*' });
+    
+    if (tabs.length > 0) {
+      // Check login status on the first QuantGuide tab
+      chrome.tabs.sendMessage(tabs[0].id, { type: 'CHECK_LOGIN_STATUS' }, (response) => {
+        if (response && response.isLoggedIn !== undefined) {
+          this.checkReadyStatus(response.isLoggedIn);
+        }
+      });
+    } else {
+      // No QuantGuide tab open
+      this.checkReadyStatus(false);
+    }
+  }
+
+  checkReadyStatus(quantguideLoggedIn) {
+    if (this.activeGame && this.activeGame.status === 'waiting_for_ready') {
+      // Auto-send ready status
+      this.playerReady({ ready: true, quantguideLoggedIn });
+    }
+  }
+
+  async playerReady(data) {
+    if (!this.socket || !this.socket.connected) {
+      return { success: false, error: 'Not connected to server' };
+    }
+
+    this.socket.emit('player-ready', data);
+    return { success: true };
+  }
+
+  async voteProblem(data) {
+    if (!this.socket || !this.socket.connected) {
+      return { success: false, error: 'Not connected to server' };
+    }
+
+    this.socket.emit('vote-problem', data);
+    return { success: true };
+  }
+
+  async submitSolution(solved) {
+    if (!this.socket || !this.socket.connected) {
+      return { success: false, error: 'Not connected to server' };
+    }
+
+    this.socket.emit('solution-attempt', { solved });
+    return { success: true };
+  }
+
+  broadcastToContentScripts(message) {
+    chrome.tabs.query({}, (tabs) => {
+      tabs.forEach(tab => {
+        if (tab.url && tab.url.includes('quantguide.io')) {
+          chrome.tabs.sendMessage(tab.id, message).catch(() => {});
+        }
+      });
     });
   }
 }

@@ -1,4 +1,5 @@
 const roomService = require('../services/roomService');
+const gameService = require('../services/gameService');
 const { socketAuth } = require('../middleware/auth');
 const { createSocketLimiter } = require('../middleware/security');
 
@@ -52,10 +53,11 @@ class SocketHandler {
       socket.on('get-rooms', () => this.handleGetRooms(socket));
       socket.on('disconnect', () => this.handleDisconnect(socket));
       
-      // Game-related events (for future implementation)
-      socket.on('ready', () => this.handlePlayerReady(socket));
-      socket.on('submit-solution', (data) => this.handleSubmitSolution(socket, data));
+      // Game-related events
+      socket.on('start-game', () => this.handleStartGame(socket));
+      socket.on('player-ready', (data) => this.handlePlayerReady(socket, data));
       socket.on('vote-problem', (data) => this.handleVoteProblem(socket, data));
+      socket.on('solution-attempt', (data) => this.handleSolutionAttempt(socket, data));
       
       // Chat events
       socket.on('send-message', (data) => this.handleSendMessage(socket, data));
@@ -295,20 +297,197 @@ class SocketHandler {
     }
   }
 
-  // Placeholder methods for future game logic
-  async handlePlayerReady(socket) {
-    // TODO: Implement when game logic is added
-    console.log(`Player ${socket.user.username} is ready`);
+  // Game-related methods
+  async handleStartGame(socket) {
+    try {
+      const roomId = this.userRoomMap.get(socket.user.userId);
+      
+      if (!roomId) {
+        socket.emit('error', { 
+          message: 'You are not in any room',
+          code: 'NOT_IN_ROOM'
+        });
+        return;
+      }
+      
+      // Start the game
+      const gameState = await gameService.startGame(roomId, socket.user.userId);
+      
+      // Notify all players in room
+      this.io.to(roomId).emit('game-started', { gameState });
+      
+      console.log(`Game started in room ${roomId} by ${socket.user.username}`);
+    } catch (error) {
+      console.error('Start game error:', error);
+      socket.emit('error', { 
+        message: error.message || 'Failed to start game',
+        code: 'START_GAME_ERROR'
+      });
+    }
   }
 
-  async handleSubmitSolution(socket, data) {
-    // TODO: Implement when game logic is added
-    console.log(`Player ${socket.user.username} submitted solution`);
+  async handlePlayerReady(socket, data) {
+    try {
+      const roomId = this.userRoomMap.get(socket.user.userId);
+      
+      if (!roomId) {
+        socket.emit('error', { 
+          message: 'You are not in any room',
+          code: 'NOT_IN_ROOM'
+        });
+        return;
+      }
+      
+      const { ready, quantguideLoggedIn } = data;
+      
+      // Update player ready status
+      const result = await gameService.updatePlayerReady(
+        roomId, 
+        socket.user.userId, 
+        ready, 
+        quantguideLoggedIn
+      );
+      
+      // Notify all players in room
+      this.io.to(roomId).emit('ready-update', {
+        userId: socket.user.userId,
+        ready,
+        quantguideLoggedIn,
+        readyCount: result.readyCount,
+        totalPlayers: result.gameState.participants.length
+      });
+      
+      // If all ready, start voting phase
+      if (result.allReady) {
+        this.io.to(roomId).emit('voting-started', {
+          gameState: result.gameState,
+          problems: result.gameState.problemOptions,
+          votingEndTime: result.gameState.votingEndTime
+        });
+        
+        // Set timeout for voting phase
+        setTimeout(async () => {
+          await gameService.checkGameTimeout(roomId);
+        }, 31000); // 31 seconds to ensure voting has ended
+      }
+      
+      console.log(`Player ${socket.user.username} ready: ${ready}, QuantGuide logged in: ${quantguideLoggedIn}`);
+    } catch (error) {
+      console.error('Player ready error:', error);
+      socket.emit('error', { 
+        message: error.message || 'Failed to update ready status',
+        code: 'READY_ERROR'
+      });
+    }
   }
 
   async handleVoteProblem(socket, data) {
-    // TODO: Implement when voting system is added
-    console.log(`Player ${socket.user.username} voted for problem`);
+    try {
+      const roomId = this.userRoomMap.get(socket.user.userId);
+      
+      if (!roomId) {
+        socket.emit('error', { 
+          message: 'You are not in any room',
+          code: 'NOT_IN_ROOM'
+        });
+        return;
+      }
+      
+      const { problemId } = data;
+      
+      if (!problemId) {
+        socket.emit('error', { 
+          message: 'Problem ID is required',
+          code: 'INVALID_REQUEST'
+        });
+        return;
+      }
+      
+      // Submit vote
+      const result = await gameService.submitVote(roomId, socket.user.userId, problemId);
+      
+      // Notify all players of vote count
+      this.io.to(roomId).emit('vote-update', {
+        votesCount: result.votesCount,
+        totalPlayers: result.totalPlayers
+      });
+      
+      // If all voted, game will start automatically
+      if (result.allVoted) {
+        const gameState = gameService.getGameState(roomId);
+        if (gameState && gameState.status === 'playing') {
+          this.io.to(roomId).emit('game-problem-selected', {
+            problem: gameState.currentProblem,
+            startTime: gameState.startTime,
+            endTime: gameState.endTime
+          });
+          
+          // Set timeout for game end
+          setTimeout(async () => {
+            await gameService.checkGameTimeout(roomId);
+          }, gameState.endTime - Date.now() + 1000);
+        }
+      }
+      
+      console.log(`Player ${socket.user.username} voted for problem ${problemId}`);
+    } catch (error) {
+      console.error('Vote problem error:', error);
+      socket.emit('error', { 
+        message: error.message || 'Failed to submit vote',
+        code: 'VOTE_ERROR'
+      });
+    }
+  }
+
+  async handleSolutionAttempt(socket, data) {
+    try {
+      const roomId = this.userRoomMap.get(socket.user.userId);
+      
+      if (!roomId) {
+        socket.emit('error', { 
+          message: 'You are not in any room',
+          code: 'NOT_IN_ROOM'
+        });
+        return;
+      }
+      
+      const { solved } = data;
+      
+      // Submit solution
+      const result = await gameService.submitSolution(roomId, socket.user.userId, solved);
+      
+      if (result.alreadySolved) {
+        return; // Player already submitted
+      }
+      
+      // Notify all players if solved
+      if (solved && result.participant) {
+        this.io.to(roomId).emit('player-solved', {
+          userId: socket.user.userId,
+          username: result.participant.username,
+          position: result.participant.position,
+          points: result.participant.points,
+          timeElapsed: Math.floor(result.participant.solveTime / 1000)
+        });
+      }
+      
+      // Check if game ended
+      if (result.gameState && result.gameState.status === 'finished') {
+        this.io.to(roomId).emit('game-ended', {
+          gameState: result.gameState,
+          eloChanges: result.eloChanges,
+          winner: result.winner
+        });
+      }
+      
+      console.log(`Player ${socket.user.username} solution attempt: ${solved ? 'SOLVED' : 'FAILED'}`);
+    } catch (error) {
+      console.error('Solution attempt error:', error);
+      socket.emit('error', { 
+        message: error.message || 'Failed to submit solution',
+        code: 'SOLUTION_ERROR'
+      });
+    }
   }
 
   // Start periodic cleanup interval

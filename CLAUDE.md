@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 QuantRooms is a multiplayer Chrome extension for QuantGuide.io that enables real-time collaborative coding practice with competitive scoring and ELO-based matchmaking. The system consists of a Chrome extension frontend and a backend server supporting WebSocket-based real-time communication.
 
-## 🚀 Current Status: Phase 2 Complete
+## 🚀 Current Status: Phase 2 Complete, OAuth Fixed
 
 ✅ **Phase 1: Backend Server Infrastructure**
 - Node.js/Express server with Socket.io WebSocket support
@@ -32,6 +32,14 @@ QuantRooms is a multiplayer Chrome extension for QuantGuide.io that enables real
 - Enhanced security with rate limiting, input sanitization, and Helmet.js
 - Complete API endpoints for authentication and user management
 - Chrome Extension V2 with authentication UI and token management
+- **OAuth Fixed**: Web Application OAuth client configured and working
+
+🚧 **Phase 3: Game Logic & Competition (IN PLANNING)**
+- Detailed implementation guide created: `/docs/phase3-implementation-guide.md`
+- Game state management system designed
+- ELO rating algorithm specified
+- Problem voting mechanism planned
+- Quick match matchmaking system outlined
 
 ## Architecture
 
@@ -567,6 +575,14 @@ RATE_LIMIT_MAX_REQUESTS=100
 - **Authentication failures**: Check Google OAuth configuration and JWT secrets
 - **Migration errors**: Run `npm run migrate` to ensure database schema is up to date
 - **Token issues**: Clear browser storage if experiencing authentication problems
+
+**OAuth Configuration (FIXED):**
+- **OAuth Type**: Use Web Application OAuth client, NOT Chrome Extension client
+- **"OAuth client was not found"**: Verify correct Google Cloud project and client ID
+- **"Missing required parameter: scope"**: Normal error when accessing callback URL directly
+- **Server not using new credentials**: Kill and restart server after updating `.env`
+- **Testing mode**: Add test users in Google Cloud Console OAuth consent screen
+- **Redirect URI**: Must be exactly `http://localhost:3000/auth/google/callback`
 
 ### Performance Considerations
 - WebSocket connections require authentication tokens

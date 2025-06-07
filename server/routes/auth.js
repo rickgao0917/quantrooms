@@ -438,7 +438,7 @@ router.get('/google/callback',
       
       // Redirect to extension with tokens
       // The extension will handle token extraction from URL
-      const redirectUrl = new URL('chrome-extension://YOUR_EXTENSION_ID/popup.html');
+      const redirectUrl = new URL('chrome-extension://phiaiicipohdcckfegjepffdcjijgedi/popup.html');
       redirectUrl.searchParams.append('accessToken', tokens.accessToken);
       redirectUrl.searchParams.append('refreshToken', tokens.refreshToken);
       redirectUrl.searchParams.append('userId', user.userId);
@@ -450,7 +450,7 @@ router.get('/google/callback',
       console.error('Google OAuth callback error:', error);
       
       // Redirect to extension with error
-      const errorUrl = new URL('chrome-extension://YOUR_EXTENSION_ID/popup.html');
+      const errorUrl = new URL('chrome-extension://phiaiicipohdcckfegjepffdcjijgedi/popup.html');
       errorUrl.searchParams.append('error', 'oauth_failed');
       
       res.redirect(errorUrl.toString());
